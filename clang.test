@@ -1,0 +1,300 @@
+diff --git a/clang-tools-extra/clangd/SemanticHighlighting.cpp b/clang-tools-extra/clangd/SemanticHighlighting.cpp
+index be87dcc8ddac..3bffe7f1a369 100644
+--- a/clang-tools-extra/clangd/SemanticHighlighting.cpp
++++ b/clang-tools-extra/clangd/SemanticHighlighting.cpp
+@@ -138,13 +138,9 @@ public:
+ 
+ private:
+   void addTypeLoc(SourceLocation Loc, const TypeLoc &TL) {
+-    if (const Type *TP = TL.getTypePtr()) {
++    if (const Type *TP = TL.getTypePtr())
+       if (const TagDecl *TD = TP->getAsTagDecl())
+         addToken(Loc, TD);
+-      if (TP->isBuiltinType())
+-        // Builtins must be special cased as they do not have a TagDecl.
+-        addToken(Loc, HighlightingKind::Primitive);
+-    }
+   }
+ 
+   void addToken(SourceLocation Loc, const NamedDecl *D) {
+@@ -390,8 +386,6 @@ llvm::StringRef toTextMateScope(HighlightingKind Kind) {
+     return "entity.name.namespace.cpp";
+   case HighlightingKind::TemplateParameter:
+     return "entity.name.type.template.cpp";
+-  case HighlightingKind::Primitive:
+-    return "storage.type.primitive.cpp";
+   case HighlightingKind::NumKinds:
+     llvm_unreachable("must not pass NumKinds to the function");
+   }
+diff --git a/clang-tools-extra/clangd/SemanticHighlighting.h b/clang-tools-extra/clangd/SemanticHighlighting.h
+index 24a83b957a55..2d9d2317c9e2 100644
+--- a/clang-tools-extra/clangd/SemanticHighlighting.h
++++ b/clang-tools-extra/clangd/SemanticHighlighting.h
+@@ -33,7 +33,6 @@ enum class HighlightingKind {
+   EnumConstant,
+   Namespace,
+   TemplateParameter,
+-  Primitive,
+ 
+   NumKinds,
+ };
+diff --git a/clang-tools-extra/clangd/test/semantic-highlighting.test b/clang-tools-extra/clangd/test/semantic-highlighting.test
+index e22b34af1cda..15342af6926f 100644
+--- a/clang-tools-extra/clangd/test/semantic-highlighting.test
++++ b/clang-tools-extra/clangd/test/semantic-highlighting.test
+@@ -30,9 +30,6 @@
+ # CHECK-NEXT:          ],
+ # CHECK-NEXT:          [
+ # CHECK-NEXT:            "entity.name.type.template.cpp"
+-# CHECK-NEXT:          ],
+-# CHECK-NEXT:          [
+-# CHECK-NEXT:            "storage.type.primitive.cpp"
+ # CHECK-NEXT:          ]
+ # CHECK-NEXT:        ]
+ # CHECK-NEXT:      },
+@@ -43,7 +40,7 @@
+ # CHECK-NEXT:    "lines": [
+ # CHECK-NEXT:      {
+ # CHECK-NEXT:        "line": 0,
+-# CHECK-NEXT:        "tokens": "AAAAAAADAAkAAAAEAAEAAA=="
++# CHECK-NEXT:        "tokens": "AAAABAABAAA="
+ # CHECK-NEXT:      }
+ # CHECK-NEXT:    ],
+ # CHECK-NEXT:    "textDocument": {
+@@ -58,11 +55,11 @@
+ # CHECK-NEXT:    "lines": [
+ # CHECK-NEXT:      {
+ # CHECK-NEXT:        "line": 0,
+-# CHECK-NEXT:        "tokens": "AAAAAAADAAkAAAAEAAEAAA=="
++# CHECK-NEXT:        "tokens": "AAAABAABAAA="
+ # CHECK-NEXT:      }
+ # CHECK-NEXT:      {
+ # CHECK-NEXT:        "line": 1,
+-# CHECK-NEXT:        "tokens": "AAAAAAADAAkAAAAEAAEAAA=="
++# CHECK-NEXT:        "tokens": "AAAABAABAAA="
+ # CHECK-NEXT:      }
+ # CHECK-NEXT:    ],
+ # CHECK-NEXT:    "textDocument": {
+@@ -77,7 +74,7 @@
+ # CHECK-NEXT:    "lines": [
+ # CHECK-NEXT:      {
+ # CHECK-NEXT:        "line": 1,
+-# CHECK-NEXT:        "tokens": "AAAAAAADAAkAAAAEAAEAAA=="
++# CHECK-NEXT:        "tokens": "AAAABAABAAA="
+ # CHECK-NEXT:      }
+ # CHECK-NEXT:   ],
+ # CHECK-NEXT:    "textDocument": {
+diff --git a/clang-tools-extra/clangd/unittests/SemanticHighlightingTests.cpp b/clang-tools-extra/clangd/unittests/SemanticHighlightingTests.cpp
+index 3ff7bbc8bbb3..006766535d92 100644
+--- a/clang-tools-extra/clangd/unittests/SemanticHighlightingTests.cpp
++++ b/clang-tools-extra/clangd/unittests/SemanticHighlightingTests.cpp
+@@ -39,8 +39,7 @@ std::vector<HighlightingToken> getExpectedTokens(Annotations &Test) {
+       {HighlightingKind::EnumConstant, "EnumConstant"},
+       {HighlightingKind::Field, "Field"},
+       {HighlightingKind::Method, "Method"},
+-      {HighlightingKind::TemplateParameter, "TemplateParameter"},
+-      {HighlightingKind::Primitive, "Primitive"}};
++      {HighlightingKind::TemplateParameter, "TemplateParameter"}};
+   std::vector<HighlightingToken> ExpectedTokens;
+   for (const auto &KindString : KindToString) {
+     std::vector<HighlightingToken> Toks = makeHighlightingTokens(
+@@ -94,26 +93,26 @@ TEST(SemanticHighlighting, GetsCorrectTokens) {
+   const char *TestCases[] = {
+     R"cpp(
+       struct $Class[[AS]] {
+-        $Primitive[[double]] $Field[[SomeMember]];
++        double $Field[[SomeMember]];
+       };
+       struct {
+       } $Variable[[S]];
+-      $Primitive[[void]] $Function[[foo]]($Primitive[[int]] $Variable[[A]], $Class[[AS]] $Variable[[As]]) {
++      void $Function[[foo]](int $Variable[[A]], $Class[[AS]] $Variable[[As]]) {
+         auto $Variable[[VeryLongVariableName]] = 12312;
+         $Class[[AS]]     $Variable[[AA]];
+         auto $Variable[[L]] = $Variable[[AA]].$Field[[SomeMember]] + $Variable[[A]];
+-        auto $Variable[[FN]] = [ $Variable[[AA]]]($Primitive[[int]] $Variable[[A]]) -> $Primitive[[void]] {};
++        auto $Variable[[FN]] = [ $Variable[[AA]]](int $Variable[[A]]) -> void {};
+         $Variable[[FN]](12312);
+       }
+     )cpp",
+     R"cpp(
+-      $Primitive[[void]] $Function[[foo]]($Primitive[[int]]);
+-      $Primitive[[void]] $Function[[Gah]]();
+-      $Primitive[[void]] $Function[[foo]]() {
++      void $Function[[foo]](int);
++      void $Function[[Gah]]();
++      void $Function[[foo]]() {
+         auto $Variable[[Bou]] = $Function[[Gah]];
+       }
+       struct $Class[[A]] {
+-        $Primitive[[void]] $Method[[abc]]();
++        void $Method[[abc]]();
+       };
+     )cpp",
+     R"cpp(
+@@ -127,17 +126,17 @@ TEST(SemanticHighlighting, GetsCorrectTokens) {
+       struct $Class[[C]] : $Namespace[[abc]]::$Class[[A]]<$TemplateParameter[[T]]> {
+         typename $TemplateParameter[[T]]::A* $Field[[D]];
+       };
+-      $Namespace[[abc]]::$Class[[A]]<$Primitive[[int]]> $Variable[[AA]];
+-      typedef $Namespace[[abc]]::$Class[[A]]<$Primitive[[int]]> $Class[[AAA]];
++      $Namespace[[abc]]::$Class[[A]]<int> $Variable[[AA]];
++      typedef $Namespace[[abc]]::$Class[[A]]<int> $Class[[AAA]];
+       struct $Class[[B]] {
+         $Class[[B]]();
+         ~$Class[[B]]();
+-        $Primitive[[void]] operator<<($Class[[B]]);
++        void operator<<($Class[[B]]);
+         $Class[[AAA]] $Field[[AA]];
+       };
+       $Class[[B]]::$Class[[B]]() {}
+       $Class[[B]]::~$Class[[B]]() {}
+-      $Primitive[[void]] $Function[[f]] () {
++      void $Function[[f]] () {
+         $Class[[B]] $Variable[[BB]] = $Class[[B]]();
+         $Variable[[BB]].~$Class[[B]]();
+         $Class[[B]]();
+@@ -155,7 +154,7 @@ TEST(SemanticHighlighting, GetsCorrectTokens) {
+         $Enum[[E]] $Field[[EEE]];
+         $Enum[[EE]] $Field[[EEEE]];
+       };
+-      $Primitive[[int]] $Variable[[I]] = $EnumConstant[[Hi]];
++      int $Variable[[I]] = $EnumConstant[[Hi]];
+       $Enum[[E]] $Variable[[L]] = $Enum[[E]]::$EnumConstant[[B]];
+     )cpp",
+     R"cpp(
+@@ -183,13 +182,13 @@ TEST(SemanticHighlighting, GetsCorrectTokens) {
+     )cpp",
+     R"cpp(
+       struct $Class[[D]] {
+-        $Primitive[[double]] $Field[[C]];
++        double $Field[[C]];
+       };
+       struct $Class[[A]] {
+-        $Primitive[[double]] $Field[[B]];
++        double $Field[[B]];
+         $Class[[D]] $Field[[E]];
+-        static $Primitive[[double]] $Variable[[S]];
+-        $Primitive[[void]] $Method[[foo]]() {
++        static double $Variable[[S]];
++        void $Method[[foo]]() {
+           $Field[[B]] = 123;
+           this->$Field[[B]] = 156;
+           this->$Method[[foo]]();
+@@ -197,7 +196,7 @@ TEST(SemanticHighlighting, GetsCorrectTokens) {
+           $Variable[[S]] = 90.1;
+         }
+       };
+-      $Primitive[[void]] $Function[[foo]]() {
++      void $Function[[foo]]() {
+         $Class[[A]] $Variable[[AA]];
+         $Variable[[AA]].$Field[[B]] += 2;
+         $Variable[[AA]].$Method[[foo]]();
+@@ -207,15 +206,14 @@ TEST(SemanticHighlighting, GetsCorrectTokens) {
+     )cpp",
+     R"cpp(
+       struct $Class[[AA]] {
+-        $Primitive[[int]] $Field[[A]];
++        int $Field[[A]];
+       }
+-      $Primitive[[int]] $Variable[[B]];
++      int $Variable[[B]];
+       $Class[[AA]] $Variable[[A]]{$Variable[[B]]};
+     )cpp",
+     R"cpp(
+       namespace $Namespace[[a]] {
+         struct $Class[[A]] {};
+-        typedef $Primitive[[char]] $Primitive[[C]];
+       }
+       typedef $Namespace[[a]]::$Class[[A]] $Class[[B]];
+       using $Class[[BB]] = $Namespace[[a]]::$Class[[A]];
+@@ -225,11 +223,9 @@ TEST(SemanticHighlighting, GetsCorrectTokens) {
+       using $Enum[[CD]] = $Enum[[CC]];
+       $Enum[[CC]] $Function[[f]]($Class[[B]]);
+       $Enum[[CD]] $Function[[f]]($Class[[BB]]);
+-      typedef $Namespace[[a]]::$Primitive[[C]] $Primitive[[PC]];
+-      typedef $Primitive[[float]] $Primitive[[F]];
+     )cpp",
+     R"cpp(
+-      template<typename $TemplateParameter[[T]], typename = $Primitive[[void]]>
++      template<typename $TemplateParameter[[T]], typename = void>
+       class $Class[[A]] {
+         $TemplateParameter[[T]] $Field[[AA]];
+         $TemplateParameter[[T]] $Method[[foo]]();
+@@ -241,7 +237,7 @@ TEST(SemanticHighlighting, GetsCorrectTokens) {
+       template<class $TemplateParameter[[TT]], class $TemplateParameter[[GG]]>
+       class $Class[[BB]] {};
+       template<class $TemplateParameter[[T]]>
+-      class $Class[[BB]]<$TemplateParameter[[T]], $Primitive[[int]]> {};
++      class $Class[[BB]]<$TemplateParameter[[T]], int> {};
+       template<class $TemplateParameter[[T]]>
+       class $Class[[BB]]<$TemplateParameter[[T]], $TemplateParameter[[T]]*> {};
+ 
+@@ -252,13 +248,13 @@ TEST(SemanticHighlighting, GetsCorrectTokens) {
+       class $Class[[Foo]] {};
+ 
+       template<typename $TemplateParameter[[T]]>
+-      $Primitive[[void]] $Function[[foo]]($TemplateParameter[[T]] ...);
++      void $Function[[foo]]($TemplateParameter[[T]] ...);
+     )cpp",
+     R"cpp(
+       template <class $TemplateParameter[[T]]>
+       struct $Class[[Tmpl]] {$TemplateParameter[[T]] $Field[[x]] = 0;};
+-      extern template struct $Class[[Tmpl]]<$Primitive[[float]]>;
+-      template struct $Class[[Tmpl]]<$Primitive[[double]]>;
++      extern template struct $Class[[Tmpl]]<float>;
++      template struct $Class[[Tmpl]]<double>;
+     )cpp",
+     // This test is to guard against highlightings disappearing when using
+     // conversion operators as their behaviour in the clang AST differ from
+@@ -267,14 +263,14 @@ TEST(SemanticHighlighting, GetsCorrectTokens) {
+       class $Class[[Foo]] {};
+       struct $Class[[Bar]] {
+         explicit operator $Class[[Foo]]*() const;
+-        explicit operator $Primitive[[int]]() const;
++        explicit operator int() const;
+         operator $Class[[Foo]]();
+       };
+-      $Primitive[[void]] $Function[[f]]() {
++      void $Function[[f]]() {
+         $Class[[Bar]] $Variable[[B]];
+         $Class[[Foo]] $Variable[[F]] = $Variable[[B]];
+         $Class[[Foo]] *$Variable[[FP]] = ($Class[[Foo]]*)$Variable[[B]];
+-        $Primitive[[int]] $Variable[[I]] = ($Primitive[[int]])$Variable[[B]];
++        int $Variable[[I]] = (int)$Variable[[B]];
+       }
+     )cpp"};
+   for (const auto &TestCase : TestCases) {
+diff --git a/clang-tools-extra/clangd/unittests/TweakTests.cpp b/clang-tools-extra/clangd/unittests/TweakTests.cpp
+index b3077000100b..bbfa9583b18e 100644
+--- a/clang-tools-extra/clangd/unittests/TweakTests.cpp
++++ b/clang-tools-extra/clangd/unittests/TweakTests.cpp
+@@ -488,7 +488,7 @@ TEST(TweaksTest, AnnotateHighlightings) {
+   checkAvailable(ID, "^vo^id^ ^f(^) {^}^"); // available everywhere.
+   checkAvailable(ID, "[[int a; int b;]]");
+   const char *Input = "void ^f() {}";
+-  const char *Output = "/* storage.type.primitive.cpp */void /* entity.name.function.cpp */f() {}";
++  const char *Output = "void /* entity.name.function.cpp */f() {}";
+   checkTransform(ID, Input, Output);
+ 
+   checkTransform(ID,
+@@ -497,8 +497,8 @@ TEST(TweaksTest, AnnotateHighlightings) {
+ void f2();]]
+ )cpp",
+   R"cpp(
+-/* storage.type.primitive.cpp */void /* entity.name.function.cpp */f1();
+-/* storage.type.primitive.cpp */void /* entity.name.function.cpp */f2();
++void /* entity.name.function.cpp */f1();
++void /* entity.name.function.cpp */f2();
+ )cpp");
+ 
+    checkTransform(ID,
+@@ -509,7 +509,7 @@ void f2() {^};
+ 
+   R"cpp(
+ void f1();
+-/* storage.type.primitive.cpp */void /* entity.name.function.cpp */f2() {};
++void /* entity.name.function.cpp */f2() {};
+ )cpp");
+ }
+ 

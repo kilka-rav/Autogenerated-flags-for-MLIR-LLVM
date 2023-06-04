@@ -1,0 +1,5125 @@
+diff --git a/clang/lib/Basic/CMakeLists.txt b/clang/lib/Basic/CMakeLists.txt
+index 40de9433a4dd..d3f8cd7cde5e 100644
+--- a/clang/lib/Basic/CMakeLists.txt
++++ b/clang/lib/Basic/CMakeLists.txt
+@@ -88,6 +88,7 @@ add_clang_library(clangBasic
+   Targets/RISCV.cpp
+   Targets/SPIR.cpp
+   Targets/Sparc.cpp
++  Targets/Sim.cpp
+   Targets/SystemZ.cpp
+   Targets/TCE.cpp
+   Targets/VE.cpp
+diff --git a/clang/lib/Basic/Targets.cpp b/clang/lib/Basic/Targets.cpp
+index 994a491cddf2..06a2a5b06b58 100644
+--- a/clang/lib/Basic/Targets.cpp
++++ b/clang/lib/Basic/Targets.cpp
+@@ -32,6 +32,7 @@
+ #include "Targets/RISCV.h"
+ #include "Targets/SPIR.h"
+ #include "Targets/Sparc.h"
++#include "Targets/Sim.h"
+ #include "Targets/SystemZ.h"
+ #include "Targets/TCE.h"
+ #include "Targets/VE.h"
+@@ -467,6 +468,9 @@ TargetInfo *AllocateTarget(const llvm::Triple &Triple,
+       return new SparcV9TargetInfo(Triple, Opts);
+     }
+ 
++  case llvm::Triple::sim:
++    return new SimTargetInfo(Triple, Opts);
++
+   case llvm::Triple::systemz:
+     switch (os) {
+     case llvm::Triple::Linux:
+diff --git a/clang/lib/Basic/Targets/Sim.cpp b/clang/lib/Basic/Targets/Sim.cpp
+new file mode 100644
+index 000000000000..dde710ffd491
+--- /dev/null
++++ b/clang/lib/Basic/Targets/Sim.cpp
+@@ -0,0 +1,11 @@
++#include "Sim.h"
++#include "clang/Basic/Builtins.h"
++#include "clang/Basic/MacroBuilder.h"
++#include "clang/Basic/TargetBuiltins.h"
++
++namespace clang::targets {
++void SimTargetInfo::getTargetDefines(const LangOptions &Opts,
++                                     MacroBuilder &Builder) const {
++  Builder.defineMacro("__sim__");
++}
++} // namespace clang::targets
+diff --git a/clang/lib/Basic/Targets/Sim.h b/clang/lib/Basic/Targets/Sim.h
+new file mode 100644
+index 000000000000..579bf55b127a
+--- /dev/null
++++ b/clang/lib/Basic/Targets/Sim.h
+@@ -0,0 +1,67 @@
++#ifndef __CLANG_LIB_BASIC_TARGETS_SIM_H__
++#define __CLANG_LIB_BASIC_TARGETS_SIM_H__
++
++#include <array>
++
++#include "clang/Basic/TargetInfo.h"
++#include "clang/Basic/TargetOptions.h"
++#include "llvm/ADT/Triple.h"
++#include "llvm/Support/Compiler.h"
++
++namespace clang::targets {
++
++class LLVM_LIBRARY_VISIBILITY SimTargetInfo : public TargetInfo {
++public:
++  SimTargetInfo(const llvm::Triple &Triple, const TargetOptions &)
++      : TargetInfo(Triple) {
++    NoAsmVariants = true;
++    LongLongAlign = 32;
++    SuitableAlign = 32;
++    DoubleAlign = LongDoubleAlign = 32;
++    SizeType = UnsignedInt;
++    PtrDiffType = SignedInt;
++    IntPtrType = SignedInt;
++    UseZeroLengthBitfieldAlignment = true;
++    resetDataLayout("e-m:e-p:32:32-i1:8:32-i8:8:32-i16:16:32-"
++                    "i32:32:32-f32:32:32-i64:32-f64:32-a:0:32-n32");
++  }
++
++  void getTargetDefines(const LangOptions &Opts,
++                        MacroBuilder &Builder) const override;
++
++  ArrayRef<Builtin::Info> getTargetBuiltins() const override { return None; }
++
++  BuiltinVaListKind getBuiltinVaListKind() const override {
++    return TargetInfo::VoidPtrBuiltinVaList;
++  }
++
++  const char *getClobbers() const override { return ""; }
++
++  ArrayRef<const char *> getGCCRegNames() const override {
++    static constexpr const std::array<const char*, 32> GCCRegNames = {
++      // Integer registers
++      "x0",  "x1",  "x2",  "x3",  "x4",  "x5",  "x6",  "x7",
++      "x8",  "x9",  "x10", "x11", "x12", "x13", "x14", "x15",
++      "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23",
++      "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31",
++    };
++    return GCCRegNames;
++  }
++
++  ArrayRef<TargetInfo::GCCRegAlias> getGCCRegAliases() const override {
++    return None;
++  }
++
++  bool validateAsmConstraint(const char *&Name,
++                             TargetInfo::ConstraintInfo &Info) const override {
++    return false;
++  }
++
++  bool hasBitIntType() const override { return true; }
++
++  bool isCLZForZeroUndef() const override { return false; }
++};
++
++} // namespace clang::targets
++
++#endif // __CLANG_LIB_BASIC_TARGETS_SIM_H__
+diff --git a/clang/lib/Driver/ToolChains/Gnu.cpp b/clang/lib/Driver/ToolChains/Gnu.cpp
+index 7a9570a686f4..74facc781d6d 100644
+--- a/clang/lib/Driver/ToolChains/Gnu.cpp
++++ b/clang/lib/Driver/ToolChains/Gnu.cpp
+@@ -277,6 +277,8 @@ static const char *getLDMOption(const llvm::Triple &T, const ArgList &Args) {
+     return "elf32_sparc";
+   case llvm::Triple::sparcv9:
+     return "elf64_sparc";
++  case llvm::Triple::sim:
++    llvm_unreachable("No LDM option for micro sim target");
+   case llvm::Triple::mips:
+     return "elf32btsmip";
+   case llvm::Triple::mipsel:
+diff --git a/llvm/CMakeLists.txt b/llvm/CMakeLists.txt
+index 72f86e14f111..8b845a898b42 100644
+--- a/llvm/CMakeLists.txt
++++ b/llvm/CMakeLists.txt
+@@ -347,6 +347,7 @@ set(LLVM_ALL_TARGETS
+   NVPTX
+   PowerPC
+   RISCV
++  sim
+   Sparc
+   SystemZ
+   VE
+@@ -1249,11 +1250,11 @@ if (LLVM_INCLUDE_BENCHMARKS)
+   set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "Don't install benchmark" FORCE)
+   set(BENCHMARK_DOWNLOAD_DEPENDENCIES OFF CACHE BOOL "Don't download dependencies" FORCE)
+   set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "Disable Google Test in benchmark" FORCE)
+-  set(BENCHMARK_ENABLE_WERROR ${LLVM_ENABLE_WERROR} CACHE BOOL 
++  set(BENCHMARK_ENABLE_WERROR ${LLVM_ENABLE_WERROR} CACHE BOOL
+     "Handle -Werror for Google Benchmark based on LLVM_ENABLE_WERROR" FORCE)
+   # Since LLVM requires C++11 it is safe to assume that std::regex is available.
+   set(HAVE_STD_REGEX ON CACHE BOOL "OK" FORCE)
+-  add_subdirectory(${LLVM_THIRD_PARTY_DIR}/benchmark 
++  add_subdirectory(${LLVM_THIRD_PARTY_DIR}/benchmark
+     ${CMAKE_CURRENT_BINARY_DIR}/third-party/benchmark)
+   add_subdirectory(benchmarks)
+ endif()
+diff --git a/llvm/cmake/config-ix.cmake b/llvm/cmake/config-ix.cmake
+index a138d372d3b2..ea5a64464ab2 100644
+--- a/llvm/cmake/config-ix.cmake
++++ b/llvm/cmake/config-ix.cmake
+@@ -432,6 +432,8 @@ elseif (LLVM_NATIVE_ARCH STREQUAL "x86_64")
+   set(LLVM_NATIVE_ARCH X86)
+ elseif (LLVM_NATIVE_ARCH MATCHES "sparc")
+   set(LLVM_NATIVE_ARCH Sparc)
++elseif (LLVM_NATIVE_ARCH STREQUAL "sim")
++  set(LLVM_NATIVE_ARCH sim)
+ elseif (LLVM_NATIVE_ARCH MATCHES "powerpc")
+   set(LLVM_NATIVE_ARCH PowerPC)
+ elseif (LLVM_NATIVE_ARCH MATCHES "ppc64le")
+diff --git a/llvm/include/llvm/ADT/Triple.h b/llvm/include/llvm/ADT/Triple.h
+index 42277c013035..1199f6207122 100644
+--- a/llvm/include/llvm/ADT/Triple.h
++++ b/llvm/include/llvm/ADT/Triple.h
+@@ -74,6 +74,7 @@ public:
+     sparc,          // Sparc: sparc
+     sparcv9,        // Sparcv9: Sparcv9
+     sparcel,        // Sparc: (endianness = little). NB: 'Sparcle' is a CPU variant
++    sim,           // Micro simulator
+     systemz,        // SystemZ: s390x
+     tce,            // TCE (http://tce.cs.tut.fi/): tce
+     tcele,          // TCE little endian (http://tce.cs.tut.fi/): tcele
+diff --git a/llvm/include/llvm/BinaryFormat/ELF.h b/llvm/include/llvm/BinaryFormat/ELF.h
+index 5d3b1270b538..58d17242a480 100644
+--- a/llvm/include/llvm/BinaryFormat/ELF.h
++++ b/llvm/include/llvm/BinaryFormat/ELF.h
+@@ -319,6 +319,7 @@ enum {
+   EM_BPF = 247,           // Linux kernel bpf virtual machine
+   EM_VE = 251,            // NEC SX-Aurora VE
+   EM_CSKY = 252,          // C-SKY 32-bit processor
++  EM_sim = 255,          // sim arch
+ };
+ 
+ // Object file classes.
+diff --git a/llvm/include/llvm/Object/ELFObjectFile.h b/llvm/include/llvm/Object/ELFObjectFile.h
+index e2d2784d4f23..bff8bf27eca2 100644
+--- a/llvm/include/llvm/Object/ELFObjectFile.h
++++ b/llvm/include/llvm/Object/ELFObjectFile.h
+@@ -1200,6 +1200,8 @@ StringRef ELFObjectFile<ELFT>::getFileFormatName() const {
+     case ELF::EM_SPARC:
+     case ELF::EM_SPARC32PLUS:
+       return "elf32-sparc";
++    case ELF::EM_sim:
++      return "elf32-sim";
+     case ELF::EM_AMDGPU:
+       return "elf32-amdgpu";
+     default:
+@@ -1291,6 +1293,9 @@ template <class ELFT> Triple::ArchType ELFObjectFile<ELFT>::getArch() const {
+   case ELF::EM_SPARCV9:
+     return Triple::sparcv9;
+ 
++  case ELF::EM_sim:
++    return Triple::sim;
++
+   case ELF::EM_AMDGPU: {
+     if (!IsLittleEndian)
+       return Triple::UnknownArch;
+diff --git a/llvm/lib/Object/ELF.cpp b/llvm/lib/Object/ELF.cpp
+index 6e56da1a31f3..1bab5be93bbe 100644
+--- a/llvm/lib/Object/ELF.cpp
++++ b/llvm/lib/Object/ELF.cpp
+@@ -131,6 +131,13 @@ StringRef llvm::object::getELFRelocationTypeName(uint32_t Machine,
+       break;
+     }
+     break;
++  case ELF::EM_sim:
++    switch (Type) {
++      default:
++        llvm_unreachable("");
++        break;
++    }
++    break;
+   case ELF::EM_AMDGPU:
+     switch (Type) {
+ #include "llvm/BinaryFormat/ELFRelocs/AMDGPU.def"
+diff --git a/llvm/lib/Support/Triple.cpp b/llvm/lib/Support/Triple.cpp
+index a9afcc9db96a..97169c8c30b0 100644
+--- a/llvm/lib/Support/Triple.cpp
++++ b/llvm/lib/Support/Triple.cpp
+@@ -65,6 +65,7 @@ StringRef Triple::getArchTypeName(ArchType Kind) {
+   case sparc:          return "sparc";
+   case sparcel:        return "sparcel";
+   case sparcv9:        return "sparcv9";
++  case sim:           return "sim";
+   case spir64:         return "spir64";
+   case spir:           return "spir";
+   case spirv32:        return "spirv32";
+@@ -127,6 +128,8 @@ StringRef Triple::getArchTypePrefix(ArchType Kind) {
+   case sparcel:
+   case sparc:       return "sparc";
+ 
++  case sim:        return "sim";
++
+   case systemz:     return "s390";
+ 
+   case x86:
+@@ -311,6 +314,7 @@ Triple::ArchType Triple::getArchTypeForLLVMName(StringRef Name) {
+     .Case("sparc", sparc)
+     .Case("sparcel", sparcel)
+     .Case("sparcv9", sparcv9)
++    .Case("sim", sim)
+     .Case("systemz", systemz)
+     .Case("tce", tce)
+     .Case("tcele", tcele)
+@@ -451,6 +455,7 @@ static Triple::ArchType parseArch(StringRef ArchName) {
+     .Case("sparc", Triple::sparc)
+     .Case("sparcel", Triple::sparcel)
+     .Cases("sparcv9", "sparc64", Triple::sparcv9)
++    .Case("sim", Triple::sim)
+     .Case("tce", Triple::tce)
+     .Case("tcele", Triple::tcele)
+     .Case("xcore", Triple::xcore)
+@@ -750,6 +755,7 @@ static Triple::ObjectFormatType getDefaultFormat(const Triple &T) {
+   case Triple::sparc:
+   case Triple::sparcel:
+   case Triple::sparcv9:
++  case Triple::sim:
+   case Triple::spir64:
+   case Triple::spir:
+   case Triple::tce:
+@@ -1302,6 +1308,7 @@ static unsigned getArchPointerBitWidth(llvm::Triple::ArchType Arch) {
+   case llvm::Triple::shave:
+   case llvm::Triple::sparc:
+   case llvm::Triple::sparcel:
++  case llvm::Triple::sim:
+   case llvm::Triple::spir:
+   case llvm::Triple::spirv32:
+   case llvm::Triple::tce:
+@@ -1389,6 +1396,7 @@ Triple Triple::get32BitArchVariant() const {
+   case Triple::shave:
+   case Triple::sparc:
+   case Triple::sparcel:
++  case Triple::sim:
+   case Triple::spir:
+   case Triple::spirv32:
+   case Triple::tce:
+@@ -1490,6 +1498,7 @@ Triple Triple::get64BitArchVariant() const {
+   case Triple::renderscript32:  T.setArch(Triple::renderscript64);     break;
+   case Triple::riscv32:         T.setArch(Triple::riscv64);    break;
+   case Triple::sparc:           T.setArch(Triple::sparcv9);    break;
++  case Triple::sim:            T.setArch(Triple::sim);       break;
+   case Triple::spir:            T.setArch(Triple::spir64);     break;
+   case Triple::spirv32:         T.setArch(Triple::spirv64);    break;
+   case Triple::thumb:           T.setArch(Triple::aarch64);    break;
+diff --git a/llvm/lib/Target/sim/CMakeLists.txt b/llvm/lib/Target/sim/CMakeLists.txt
+new file mode 100644
+index 000000000000..e75003995fd1
+--- /dev/null
++++ b/llvm/lib/Target/sim/CMakeLists.txt
+@@ -0,0 +1,54 @@
++add_llvm_component_group(sim)
++
++set(LLVM_TARGET_DEFINITIONS sim.td)
++
++# Generate simGenRegisterInfo.inc and simGenInstrInfo.inc which included by
++#  your hand code C++ files.
++# simGenRegisterInfo.inc came from simRegisterInfo.td, simGenInstrInfo.inc
++#  came from simInstrInfo.td.
++tablegen(LLVM simGenRegisterInfo.inc -gen-register-info)
++tablegen(LLVM simGenInstrInfo.inc -gen-instr-info)
++tablegen(LLVM simGenCallingConv.inc -gen-callingconv)
++tablegen(LLVM simGenMCPseudoLowering.inc -gen-pseudo-lowering)
++tablegen(LLVM simGenSubtargetInfo.inc -gen-subtarget)
++tablegen(LLVM simGenAsmWriter.inc -gen-asm-writer)
++tablegen(LLVM simGenDAGISel.inc -gen-dag-isel)
++
++#tablegen(LLVM simGenDisassemblerTables.inc -gen-disassembler)
++
++# simCommonTableGen must be defined
++add_public_tablegen_target(simCommonTableGen)
++
++# simCodeGen should match with LLVMBuild.txt simCodeGen
++add_llvm_target(simCodeGen
++  simAsmPrinter.cpp
++  simFrameLowering.cpp
++  simInstrInfo.cpp
++  simISelDagToDag.cpp
++  simISelLowering.cpp
++  simMachineFunctionInfo.cpp
++  simMCInstLower.cpp
++  simRegisterInfo.cpp
++  simSubtarget.cpp
++  simTargetMachine.cpp
++  simMatInt.cpp
++
++  LINK_COMPONENTS
++  Analysis
++  AsmPrinter
++  CodeGen
++  Core
++  MC
++  simDesc
++  simInfo
++  SelectionDAG
++  Support
++  Target
++  GlobalISel
++
++  ADD_TO_COMPONENT
++  sim
++)
++
++add_subdirectory(TargetInfo)
++add_subdirectory(MCTargetDesc)
+diff --git a/llvm/lib/Target/sim/MCTargetDesc/CMakeLists.txt b/llvm/lib/Target/sim/MCTargetDesc/CMakeLists.txt
+new file mode 100644
+index 000000000000..57372652abcf
+--- /dev/null
++++ b/llvm/lib/Target/sim/MCTargetDesc/CMakeLists.txt
+@@ -0,0 +1,14 @@
++add_llvm_component_library(LLVMsimDesc
++  simInstPrinter.cpp
++  simMCAsmInfo.cpp
++  simMCTargetDesc.cpp
++  simInfo.cpp
++
++  LINK_COMPONENTS
++  MC
++  simInfo
++  Support
++
++  ADD_TO_COMPONENT
++  sim
++  )
+diff --git a/llvm/lib/Target/sim/MCTargetDesc/simInfo.cpp b/llvm/lib/Target/sim/MCTargetDesc/simInfo.cpp
+new file mode 100644
+index 000000000000..c5b4f3970540
+--- /dev/null
++++ b/llvm/lib/Target/sim/MCTargetDesc/simInfo.cpp
+@@ -0,0 +1,11 @@
++#include "simInfo.h"
++
++#define GET_REGINFO_ENUM
++#include "simGenRegisterInfo.inc"
++
++namespace llvm {
++namespace simABI {
++MCRegister getBPReg() { return sim::X9; }
++MCRegister getSCSPReg() { return sim::X18; }
++} // namespace simABI
++} // namespace llvm
+diff --git a/llvm/lib/Target/sim/MCTargetDesc/simInfo.h b/llvm/lib/Target/sim/MCTargetDesc/simInfo.h
+new file mode 100644
+index 000000000000..203701ba5169
+--- /dev/null
++++ b/llvm/lib/Target/sim/MCTargetDesc/simInfo.h
+@@ -0,0 +1,98 @@
++#ifndef __LLVM_LIB_TARGET_SIM_MCTARGETDESC_SIMINFO_H__
++#define __LLVM_LIB_TARGET_SIM_MCTARGETDESC_SIMINFO_H__
++
++#include "llvm/MC/MCInstrDesc.h"
++#include "llvm/MC/MCRegister.h"
++
++namespace llvm {
++
++namespace simII {
++enum {
++  InstFormatPseudo = 0,
++  InstFormatR = 1,
++  InstFormatR4 = 2,
++  InstFormatI = 3,
++  InstFormatS = 4,
++  InstFormatB = 5,
++  InstFormatU = 6,
++  InstFormatJ = 7,
++};
++
++// RISC-V Specific Machine Operand Flags
++enum {
++  MO_None = 0,
++  MO_CALL = 1,
++  MO_PLT = 2,
++  MO_LO = 3,
++  MO_HI = 4,
++  MO_PCREL_LO = 5,
++  MO_PCREL_HI = 6,
++  MO_GOT_HI = 7,
++  MO_TPREL_LO = 8,
++  MO_TPREL_HI = 9,
++  MO_TPREL_ADD = 10,
++  MO_TLS_GOT_HI = 11,
++  MO_TLS_GD_HI = 12,
++
++  // Used to differentiate between target-specific "direct" flags and "bitmask"
++  // flags. A machine operand can only have one "direct" flag, but can have
++  // multiple "bitmask" flags.
++  MO_DIRECT_FLAG_MASK = 15
++};
++} // namespace simII
++
++namespace simCC {
++enum CondCode {
++  COND_EQ,
++  COND_NE,
++  COND_LT,
++  COND_GE,
++  COND_LTU,
++  COND_GEU,
++  COND_INVALID
++};
++
++CondCode getOppositeBranchCondition(CondCode);
++
++enum BRCondCode {
++  BREQ = 0x0,
++};
++} // end namespace simCC
++
++namespace simOp {
++enum OperandType : unsigned {
++  OPERAND_FIRST_RISCV_IMM = MCOI::OPERAND_FIRST_TARGET,
++  OPERAND_UIMM2 = OPERAND_FIRST_RISCV_IMM,
++  OPERAND_UIMM3,
++  OPERAND_UIMM4,
++  OPERAND_UIMM5,
++  OPERAND_UIMM7,
++  OPERAND_UIMM12,
++  OPERAND_SIMM12,
++  OPERAND_UIMM20,
++  OPERAND_UIMMLOG2XLEN,
++  OPERAND_RVKRNUM,
++  OPERAND_LAST_RISCV_IMM = OPERAND_RVKRNUM,
++  // Operand is either a register or uimm5, this is used by V extension pseudo
++  // instructions to represent a value that be passed as AVL to either vsetvli
++  // or vsetivli.
++  OPERAND_AVL,
++};
++} // namespace simOp
++
++namespace simABI {
++
++enum ABI { ABI_ILP32, ABI_Unknown };
++
++// To avoid the BP value clobbered by a function call, we need to choose a
++// callee saved register to save the value. RV32E only has X8 and X9 as callee
++// saved registers and X8 will be used as fp. So we choose X9 as bp.
++MCRegister getBPReg();
++
++// Returns the register holding shadow call stack pointer.
++MCRegister getSCSPReg();
++} // namespace simABI
++
++} // end namespace llvm
++
++#endif // __LLVM_LIB_TARGET_SIM_MCTARGETDESC_SIMINFO_H__
+diff --git a/llvm/lib/Target/sim/MCTargetDesc/simInstPrinter.cpp b/llvm/lib/Target/sim/MCTargetDesc/simInstPrinter.cpp
+new file mode 100644
+index 000000000000..36f65f00ecb4
+--- /dev/null
++++ b/llvm/lib/Target/sim/MCTargetDesc/simInstPrinter.cpp
+@@ -0,0 +1,76 @@
++#include "simInstPrinter.h"
++#include "MCTargetDesc/simInfo.h"
++#include "llvm/ADT/StringExtras.h"
++#include "llvm/MC/MCExpr.h"
++#include "llvm/MC/MCInst.h"
++#include "llvm/MC/MCInstrInfo.h"
++#include "llvm/MC/MCSymbol.h"
++#include "llvm/Support/Casting.h"
++#include "llvm/Support/Debug.h"
++#include "llvm/Support/ErrorHandling.h"
++#include "llvm/Support/raw_ostream.h"
++
++using namespace llvm;
++
++#define DEBUG_TYPE "asm-printer"
++
++#define GET_REGINFO_ENUM
++#include "simGenRegisterInfo.inc"
++
++#include "simGenInstrInfo.inc"
++#include "simGenSubtargetInfo.inc"
++
++#include "simGenAsmWriter.inc"
++
++void simInstPrinter::printRegName(raw_ostream &O, unsigned RegNo) const {
++  O << getRegisterName(RegNo);
++}
++
++void simInstPrinter::printInst(const MCInst *MI, uint64_t Address,
++                               StringRef Annot, const MCSubtargetInfo &STI,
++                               raw_ostream &O) {
++  printInstruction(MI, Address, O);
++  printAnnotation(O, Annot);
++}
++
++void simInstPrinter::printOperand(const MCInst *MI, int OpNo, raw_ostream &O) {
++  const MCOperand &MO = MI->getOperand(OpNo);
++
++  if (MO.isReg()) {
++    printRegName(O, MO.getReg());
++    return;
++  }
++
++  if (MO.isImm()) {
++    O << MO.getImm();
++    return;
++  }
++
++  assert(MO.isExpr() && "Unknown operand kind in printOperand");
++  MO.getExpr()->print(O, &MAI);
++}
++
++void simInstPrinter::printBranchOperand(const MCInst *MI, uint64_t Address,
++                                        unsigned OpNo, raw_ostream &O) {
++  const MCOperand &MO = MI->getOperand(OpNo);
++  if (!MO.isImm())
++    return printOperand(MI, OpNo, O);
++
++  if (PrintBranchImmAsAddress) {
++    uint32_t Target = Address + MO.getImm();
++    O << formatHex(static_cast<uint64_t>(Target));
++  } else {
++    O << MO.getImm();
++  }
++}
++
++// Print architectural register names rather than the ABI names (such as x2
++// instead of sp).
++// TODO: Make RISCVInstPrinter::getRegisterName non-static so that this can a
++// member.
++static bool ArchRegNames;
++
++const char *simInstPrinter::getRegisterName(unsigned RegNo) {
++  return getRegisterName(RegNo,
++                         ArchRegNames ? sim::NoRegAltName : sim::ABIRegAltName);
++}
+diff --git a/llvm/lib/Target/sim/MCTargetDesc/simInstPrinter.h b/llvm/lib/Target/sim/MCTargetDesc/simInstPrinter.h
+new file mode 100644
+index 000000000000..3fea6980629f
+--- /dev/null
++++ b/llvm/lib/Target/sim/MCTargetDesc/simInstPrinter.h
+@@ -0,0 +1,32 @@
++#ifndef __LLVM_LIB_TARGET_SIM_MCTARGETDESC_SIMINSTPRINTER_H__
++#define __LLVM_LIB_TARGET_SIM_MCTARGETDESC_SIMINSTPRINTER_H__
++
++#include "llvm/MC/MCInstPrinter.h"
++
++namespace llvm {
++
++class simInstPrinter : public MCInstPrinter {
++public:
++  simInstPrinter(const MCAsmInfo &MAI, const MCInstrInfo &MII,
++                  const MCRegisterInfo &MRI)
++      : MCInstPrinter(MAI, MII, MRI) {}
++
++  // Autogenerated by tblgen.
++  std::pair<const char *, uint64_t> getMnemonic(const MCInst *MI) override;
++  void printInstruction(const MCInst *MI, uint64_t Address, raw_ostream &O);
++  static const char *getRegisterName(unsigned RegNo);
++  static const char *getRegisterName(unsigned RegNo, unsigned AltIdx);
++
++  void printRegName(raw_ostream &OS, unsigned RegNo) const override;
++  void printInst(const MCInst *MI, uint64_t Address, StringRef Annot,
++                 const MCSubtargetInfo &STI, raw_ostream &O) override;
++
++  void printOperand(const MCInst *MI, int OpNo, raw_ostream &OS);
++  void printBranchOperand(const MCInst *MI, uint64_t Address, unsigned OpNo,
++                          raw_ostream &O);
++};
++} // end namespace llvm
++
++
++
++#endif // __LLVM_LIB_TARGET_SIM_MCTARGETDESC_SIMINSTPRINTER_H__
+diff --git a/llvm/lib/Target/sim/MCTargetDesc/simMCAsmInfo.cpp b/llvm/lib/Target/sim/MCTargetDesc/simMCAsmInfo.cpp
+new file mode 100644
+index 000000000000..5d70c835819c
+--- /dev/null
++++ b/llvm/lib/Target/sim/MCTargetDesc/simMCAsmInfo.cpp
+@@ -0,0 +1,21 @@
++#include "simMCAsmInfo.h"
++using namespace llvm;
++
++void simMCAsmInfo::anchor() {}
++
++simMCAsmInfo::simMCAsmInfo(const Triple &TT) {
++  SupportsDebugInformation = false;
++  Data16bitsDirective = "\t.short\t";
++  Data32bitsDirective = "\t.word\t";
++  Data64bitsDirective = nullptr;
++  ZeroDirective = "\t.space\t";
++  CommentString = ";";
++
++  UsesELFSectionDirectiveForBSS = false;
++  AllowAtInName = true;
++  HiddenVisibilityAttr = MCSA_Invalid;
++  HiddenDeclarationVisibilityAttr = MCSA_Invalid;
++  ProtectedVisibilityAttr = MCSA_Invalid;
++
++  ExceptionsType = ExceptionHandling::None;
++}
+diff --git a/llvm/lib/Target/sim/MCTargetDesc/simMCAsmInfo.h b/llvm/lib/Target/sim/MCTargetDesc/simMCAsmInfo.h
+new file mode 100644
+index 000000000000..61be08ca1476
+--- /dev/null
++++ b/llvm/lib/Target/sim/MCTargetDesc/simMCAsmInfo.h
+@@ -0,0 +1,19 @@
++#ifndef __LLVM_LIB_TARGET_SIM_MCTARGETDESC_SIMMCASMINFO_H__
++#define __LLVM_LIB_TARGET_SIM_MCTARGETDESC_SIMMCASMINFO_H__
++
++#include "llvm/MC/MCAsmInfoELF.h"
++
++namespace llvm {
++
++class Triple;
++
++class simMCAsmInfo : public MCAsmInfoELF {
++  void anchor() override;
++
++public:
++  explicit simMCAsmInfo(const Triple &TT);
++};
++
++} // end namespace llvm
++
++#endif // __LLVM_LIB_TARGET_SIM_MCTARGETDESC_SIMMCASMINFO_H__
+diff --git a/llvm/lib/Target/sim/MCTargetDesc/simMCTargetDesc.cpp b/llvm/lib/Target/sim/MCTargetDesc/simMCTargetDesc.cpp
+new file mode 100644
+index 000000000000..374a5abe18a7
+--- /dev/null
++++ b/llvm/lib/Target/sim/MCTargetDesc/simMCTargetDesc.cpp
+@@ -0,0 +1,92 @@
++#include "simMCTargetDesc.h"
++#include "TargetInfo/simTargetInfo.h"
++#include "simInfo.h"
++#include "simInstPrinter.h"
++#include "simMCAsmInfo.h"
++#include "simTargetStreamer.h"
++#include "llvm/MC/MCDwarf.h"
++#include "llvm/MC/MCInstrInfo.h"
++#include "llvm/MC/MCRegisterInfo.h"
++#include "llvm/MC/MCSubtargetInfo.h"
++#include "llvm/MC/TargetRegistry.h"
++#include "llvm/Support/ErrorHandling.h"
++#include "llvm/Support/FormattedStream.h"
++
++using namespace llvm;
++
++#define GET_REGINFO_MC_DESC
++#include "simGenRegisterInfo.inc"
++
++#define GET_INSTRINFO_MC_DESC
++#include "simGenInstrInfo.inc"
++
++#define GET_SUBTARGETINFO_MC_DESC
++#include "simGenSubtargetInfo.inc"
++
++static MCInstrInfo *createsimMCInstrInfo() {
++  auto *X = new MCInstrInfo();
++  InitsimMCInstrInfo(X);
++  return X;
++}
++
++static MCRegisterInfo *createsimMCRegisterInfo(const Triple &TT) {
++  auto *X = new MCRegisterInfo();
++  InitsimMCRegisterInfo(X, sim::X1);
++  return X;
++}
++
++static MCSubtargetInfo *createsimMCSubtargetInfo(const Triple &TT,
++                                                  StringRef CPU, StringRef FS) {
++  return createsimMCSubtargetInfoImpl(TT, CPU, /*TuneCPU=*/CPU, FS);
++}
++
++static MCAsmInfo *createsimMCAsmInfo(const MCRegisterInfo &MRI,
++                                      const Triple &TT,
++                                      const MCTargetOptions &Options) {
++  MCAsmInfo *MAI = new simMCAsmInfo(TT);
++  MCRegister SP = MRI.getDwarfRegNum(sim::X2, true);
++  MCCFIInstruction Inst = MCCFIInstruction::cfiDefCfa(nullptr, SP, 0);
++  MAI->addInitialFrameState(Inst);
++  return MAI;
++}
++
++static MCInstPrinter *createsimMCInstPrinter(const Triple &T,
++                                              unsigned SyntaxVariant,
++                                              const MCAsmInfo &MAI,
++                                              const MCInstrInfo &MII,
++                                              const MCRegisterInfo &MRI) {
++  return new simInstPrinter(MAI, MII, MRI);
++}
++
++simTargetStreamer::simTargetStreamer(MCStreamer &S) : MCTargetStreamer(S) {}
++simTargetStreamer::~simTargetStreamer() = default;
++
++static MCTargetStreamer *createTargetAsmStreamer(MCStreamer &S,
++                                                 formatted_raw_ostream &OS,
++                                                 MCInstPrinter *InstPrint,
++                                                 bool isVerboseAsm) {
++  return new simTargetStreamer(S);
++}
++
++// Force static initialization.
++extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializesimTargetMC() {
++  // Register the MC asm info.
++  Target &ThesimTarget = getThesimTarget();
++  RegisterMCAsmInfoFn X(ThesimTarget, createsimMCAsmInfo);
++
++  // Register the MC instruction info.
++  TargetRegistry::RegisterMCInstrInfo(ThesimTarget, createsimMCInstrInfo);
++
++  // Register the MC register info.
++  TargetRegistry::RegisterMCRegInfo(ThesimTarget, createsimMCRegisterInfo);
++
++  // Register the MC subtarget info.
++  TargetRegistry::RegisterMCSubtargetInfo(ThesimTarget,
++                                          createsimMCSubtargetInfo);
++
++  // Register the MCInstPrinter
++  TargetRegistry::RegisterMCInstPrinter(ThesimTarget, createsimMCInstPrinter);
++
++  TargetRegistry::RegisterAsmTargetStreamer(ThesimTarget,
++                                            createTargetAsmStreamer);
++}
+diff --git a/llvm/lib/Target/sim/MCTargetDesc/simMCTargetDesc.h b/llvm/lib/Target/sim/MCTargetDesc/simMCTargetDesc.h
+new file mode 100644
+index 000000000000..62411733e776
+--- /dev/null
++++ b/llvm/lib/Target/sim/MCTargetDesc/simMCTargetDesc.h
+@@ -0,0 +1,25 @@
++#ifndef __LLVM_LIB_TARGET_SIM_MCTARGETDESC_SIMMCTARGETDESC_H__
++#define __LLVM_LIB_TARGET_SIM_MCTARGETDESC_SIMMCTARGETDESC_H__
++
++#include "llvm/Support/DataTypes.h"
++
++#include <memory>
++
++namespace llvm {
++class Target;
++class Triple;
++
++extern Target ThesimTarget;
++
++} // End llvm namespace
++
++// Defines symbolic names for sim registers.  This defines a mapping from
++// register name to register number.
++#define GET_REGINFO_ENUM
++#include "simGenRegisterInfo.inc"
++
++// Defines symbolic names for the sim instructions.
++#define GET_INSTRINFO_ENUM
++#include "simGenInstrInfo.inc"
++
++#endif // __LLVM_LIB_TARGET_SIM_MCTARGETDESC_SIMMCTARGETDESC_H__
+diff --git a/llvm/lib/Target/sim/TargetInfo/CMakeLists.txt b/llvm/lib/Target/sim/TargetInfo/CMakeLists.txt
+new file mode 100644
+index 000000000000..8768663044c6
+--- /dev/null
++++ b/llvm/lib/Target/sim/TargetInfo/CMakeLists.txt
+@@ -0,0 +1,9 @@
++add_llvm_component_library(LLVMsimInfo
++  simTargetInfo.cpp
++
++  LINK_COMPONENTS
++  Support
++
++  ADD_TO_COMPONENT
++  sim
++  )
+diff --git a/llvm/lib/Target/sim/TargetInfo/simTargetInfo.cpp b/llvm/lib/Target/sim/TargetInfo/simTargetInfo.cpp
+new file mode 100644
+index 000000000000..79647e65b424
+--- /dev/null
++++ b/llvm/lib/Target/sim/TargetInfo/simTargetInfo.cpp
+@@ -0,0 +1,15 @@
++#include "sim.h"
++#include "llvm/IR/Module.h"
++#include "TargetInfo/simTargetInfo.h"
++#include "llvm/MC/TargetRegistry.h"
++
++using namespace llvm;
++
++Target &llvm::getThesimTarget() {
++  static Target ThesimTarget;
++  return ThesimTarget;
++}
++
++extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializesimTargetInfo() {
++  RegisterTarget<Triple::sim, false> X(getThesimTarget(), "sim", "sim (32-bit simulator arch)", "sim");
++}
+diff --git a/llvm/lib/Target/sim/TargetInfo/simTargetInfo.h b/llvm/lib/Target/sim/TargetInfo/simTargetInfo.h
+new file mode 100644
+index 000000000000..2f263a3c4838
+--- /dev/null
++++ b/llvm/lib/Target/sim/TargetInfo/simTargetInfo.h
+@@ -0,0 +1,12 @@
++#ifndef __LLVM_LIB_TARGET_SIM_TARGETINFO_SIMTARGETINFO_H__
++#define __LLVM_LIB_TARGET_SIM_TARGETINFO_SIMTARGETINFO_H__
++
++namespace llvm {
++
++class Target;
++
++Target &getThesimTarget();
++
++} // namespace llvm
++
++#endif // __LLVM_LIB_TARGET_SIM_TARGETINFO_SIMTARGETINFO_H__
+diff --git a/llvm/lib/Target/sim/sim.h b/llvm/lib/Target/sim/sim.h
+new file mode 100644
+index 000000000000..d16d4b93885d
+--- /dev/null
++++ b/llvm/lib/Target/sim/sim.h
+@@ -0,0 +1,35 @@
++#ifndef __LLVM_LIB_TARGET_SIM_SIM_H__
++#define __LLVM_LIB_TARGET_SIM_SIM_H__
++
++#include "MCTargetDesc/simMCTargetDesc.h"
++#include "llvm/Target/TargetMachine.h"
++
++namespace llvm {
++class simTargetMachine;
++class FunctionPass;
++class simSubtarget;
++class AsmPrinter;
++class InstructionSelector;
++class MCInst;
++class MCOperand;
++class MachineInstr;
++class MachineOperand;
++class PassRegistry;
++
++bool lowersimMachineInstrToMCInst(const MachineInstr *MI, MCInst &OutMI,
++                                    AsmPrinter &AP);
++bool LowersimMachineOperandToMCOperand(const MachineOperand &MO,
++                                         MCOperand &MCOp, const AsmPrinter &AP);
++
++FunctionPass *createsimISelDag(simTargetMachine &TM,
++                                CodeGenOpt::Level OptLevel);
++
++
++// namespace sim {
++// enum {
++// };
++// } // namespace sim
++
++} // namespace llvm
++
++#endif // __LLVM_LIB_TARGET_SIM_SIM_H__
+diff --git a/llvm/lib/Target/sim/sim.td b/llvm/lib/Target/sim/sim.td
+new file mode 100644
+index 000000000000..86080427ebfb
+--- /dev/null
++++ b/llvm/lib/Target/sim/sim.td
+@@ -0,0 +1,55 @@
++//===----------------------------------------------------------------------===//
++// This is the top level entry point for the sim target.
++//===----------------------------------------------------------------------===//
++
++//===----------------------------------------------------------------------===//
++// Target-independent interfaces
++//===----------------------------------------------------------------------===//
++
++include "llvm/Target/Target.td"
++
++//===----------------------------------------------------------------------===//
++// sim Subtarget features
++//===----------------------------------------------------------------------===//
++
++//def FeatureDummy
++//    : SubtargetFeature<"dummy", "Dummy", "true",
++//                       "Dummy feature">;
++
++defvar sim32 = DefaultMode;
++
++//===----------------------------------------------------------------------===//
++// Target-dependent interfaces
++//===----------------------------------------------------------------------===//
++
++include "simRegisterInfo.td"
++
++//===----------------------------------------------------------------------===//
++// Calling Conv, Instruction Descriptions
++//===----------------------------------------------------------------------===//
++
++include "simSchedule.td"
++include "simCallingConv.td"
++
++include "simInstrInfo.td"
++def simInstrInfo : InstrInfo;
++
++//===----------------------------------------------------------------------===//
++// sim processors supported.
++//===----------------------------------------------------------------------===//
++
++def : ProcessorModel<"generic-32", NoSchedModel, []>;
++
++def simAsmParser : AsmParser {
++  let ShouldEmitMatchRegisterAltName = 1;
++  let AllowDuplicateRegisterNames = 1;
++}
++
++
++// Will generate simGenAsmWrite.inc included by simInstPrinter.cpp, contents
++//  as follows,
++// void simInstPrinter::printInstruction(const MCInst *MI, raw_ostream &O) {...}
++// const char *simInstPrinter::getRegisterName(unsigned RegNo) {...}
++def sim : Target {
++  let InstructionSet = simInstrInfo;
++}
+diff --git a/llvm/lib/Target/sim/simAsmPrinter.cpp b/llvm/lib/Target/sim/simAsmPrinter.cpp
+new file mode 100644
+index 000000000000..8e38c4bd1847
+--- /dev/null
++++ b/llvm/lib/Target/sim/simAsmPrinter.cpp
+@@ -0,0 +1,80 @@
++#include "MCTargetDesc/simInstPrinter.h"
++#include "TargetInfo/simTargetInfo.h"
++#include "sim.h"
++#include "simSubtarget.h"
++#include "simTargetMachine.h"
++#include "llvm/ADT/Statistic.h"
++#include "llvm/CodeGen/AsmPrinter.h"
++#include "llvm/CodeGen/MachineConstantPool.h"
++#include "llvm/CodeGen/MachineFunctionPass.h"
++#include "llvm/CodeGen/MachineInstr.h"
++#include "llvm/CodeGen/MachineModuleInfo.h"
++#include "llvm/MC/MCAsmInfo.h"
++#include "llvm/MC/MCInst.h"
++#include "llvm/MC/MCStreamer.h"
++#include "llvm/MC/MCSymbol.h"
++#include "llvm/MC/TargetRegistry.h"
++#include "llvm/Support/ErrorHandling.h"
++#include "llvm/Support/raw_ostream.h"
++
++using namespace llvm;
++
++#define DEBUG_TYPE "asm-printer"
++
++namespace {
++
++class simAsmPrinter : public AsmPrinter {
++  const MCSubtargetInfo *STI;
++
++public:
++  explicit simAsmPrinter(TargetMachine &TM,
++                          std::unique_ptr<MCStreamer> Streamer)
++      : AsmPrinter(TM, std::move(Streamer)), STI(TM.getMCSubtargetInfo()) {}
++
++  StringRef getPassName() const override { return "sim Assembly Printer"; }
++
++  bool emitPseudoExpansionLowering(MCStreamer &OutStreamer,
++                                   const MachineInstr *MI);
++
++  void emitInstruction(const MachineInstr *MI) override;
++  bool runOnMachineFunction(MachineFunction &MF) override;
++
++  // Used in pseudo lowerings
++  bool lowerOperand(const MachineOperand &MO, MCOperand &MCOp) const {
++    return LowersimMachineOperandToMCOperand(MO, MCOp, *this);
++  }
++};
++
++} // end anonymous namespace
++
++// Simple pseudo-instructions have their lowering (with expansion to real
++// instructions) auto-generated.
++#include "simGenMCPseudoLowering.inc"
++
++void simAsmPrinter::emitInstruction(const MachineInstr *MI) {
++  // Do any auto-generated pseudo lowerings.
++  if (emitPseudoExpansionLowering(*OutStreamer, MI))
++    return;
++
++  MCInst TmpInst;
++  if (!lowersimMachineInstrToMCInst(MI, TmpInst, *this))
++    EmitToStreamer(*OutStreamer, TmpInst);
++}
++
++bool simAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
++  // Set the current MCSubtargetInfo to a copy which has the correct
++  // feature bits for the current MachineFunction
++  MCSubtargetInfo &NewSTI =
++      OutStreamer->getContext().getSubtargetCopy(*TM.getMCSubtargetInfo());
++  NewSTI.setFeatureBits(MF.getSubtarget().getFeatureBits());
++  STI = &NewSTI;
++
++  SetupMachineFunction(MF);
++  emitFunctionBody();
++  return false;
++}
++
++// Force static initialization.
++extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializesimAsmPrinter() {
++  RegisterAsmPrinter<simAsmPrinter> X(getThesimTarget());
++}
+diff --git a/llvm/lib/Target/sim/simCallingConv.td b/llvm/lib/Target/sim/simCallingConv.td
+new file mode 100644
+index 000000000000..8a95181ff802
+--- /dev/null
++++ b/llvm/lib/Target/sim/simCallingConv.td
+@@ -0,0 +1,23 @@
++//===----------------------------------------------------------------------===//
++// This describes the calling conventions for sim architecture.
++//===----------------------------------------------------------------------===//
++
++//===----------------------------------------------------------------------===//
++// sim Return Value Calling Convention
++//===----------------------------------------------------------------------===//
++
++
++def CSR_ILP32_LP64
++    : CalleeSavedRegs<(add X1, X3, X4, X8, X9, (sequence "X%u", 18, 27))>;
++
++// Needed for implementation of RISCVRegisterInfo::getNoPreservedMask()
++def CSR_NoRegs : CalleeSavedRegs<(add)>;
++
++// Interrupt handler needs to save/restore all registers that are used,
++// both Caller and Callee saved registers.
++def CSR_Interrupt : CalleeSavedRegs<(add X1,
++    (sequence "X%u", 3, 9),
++    (sequence "X%u", 10, 11),
++    (sequence "X%u", 12, 17),
++    (sequence "X%u", 18, 27),
++    (sequence "X%u", 28, 31))>;
+diff --git a/llvm/lib/Target/sim/simFrameLowering.cpp b/llvm/lib/Target/sim/simFrameLowering.cpp
+new file mode 100644
+index 000000000000..1df3239c12ce
+--- /dev/null
++++ b/llvm/lib/Target/sim/simFrameLowering.cpp
+@@ -0,0 +1,369 @@
++#include "simFrameLowering.h"
++#include "MCTargetDesc/simInfo.h"
++#include "simMachineFunctionInfo.h"
++#include "simSubtarget.h"
++#include "llvm/CodeGen/MachineFrameInfo.h"
++#include "llvm/CodeGen/MachineInstrBuilder.h"
++#include "llvm/CodeGen/MachineModuleInfo.h"
++#include "llvm/CodeGen/RegisterScavenging.h"
++#include "llvm/CodeGen/TargetRegisterInfo.h"
++#include "llvm/IR/Function.h"
++#include "llvm/Support/Debug.h"
++#include "llvm/Support/ErrorHandling.h"
++#include <algorithm>
++
++#define DEBUG_TYPE "sim-frame-lowering"
++
++using namespace llvm;
++
++// seems done
++void simFrameLowering::determineCalleeSaves(MachineFunction &MF,
++                                            BitVector &SavedRegs,
++                                            RegScavenger *RS) const {
++  TargetFrameLowering::determineCalleeSaves(MF, SavedRegs, RS);
++  // Unconditionally spill RA and FP only if the function uses a frame
++  // pointer.
++  if (hasFP(MF)) {
++    SavedRegs.set(sim::X1);
++    SavedRegs.set(sim::X8);
++  }
++  // Mark BP as used if function has dedicated base pointer.
++  if (hasBP(MF))
++    SavedRegs.set(simABI::getBPReg());
++}
++
++// TODO: Build insns
++void simFrameLowering::adjustReg(MachineBasicBlock &MBB,
++                                 MachineBasicBlock::iterator MBBI,
++                                 const DebugLoc &DL, Register DestReg,
++                                 Register SrcReg, int64_t Val,
++                                 MachineInstr::MIFlag Flag) const {
++  // MachineRegisterInfo &MRI = MBB.getParent()->getRegInfo();
++  const simInstrInfo *TII = STI.getInstrInfo();
++
++  if (DestReg == SrcReg && Val == 0)
++    return;
++
++  if (isInt<12>(Val)) {
++    BuildMI(MBB, MBBI, DL, TII->get(sim::ADDI), DestReg)
++        .addReg(SrcReg)
++        .addImm(Val)
++        .setMIFlag(Flag);
++  } else {
++    // alloc vreg, load imm, add
++    llvm_unreachable("");
++  }
++}
++
++void simFrameLowering::adjustStackToMatchRecords(
++    MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
++    bool Allocate) const {
++  llvm_unreachable("");
++}
++
++// Returns the register used to hold the frame pointer.
++static Register getFPReg(const simSubtarget &STI) { return sim::X8; }
++
++// Returns the register used to hold the stack pointer.
++static Register getSPReg(const simSubtarget &STI) { return sim::X2; }
++
++// Determines the size of the frame and maximum call frame size.
++void simFrameLowering::determineFrameLayout(MachineFunction &MF) const {
++  MachineFrameInfo &MFI = MF.getFrameInfo();
++
++  // Get the number of bytes to allocate from the FrameInfo.
++  uint64_t FrameSize = MFI.getStackSize();
++
++  // Get the alignment.
++  Align StackAlign = getStackAlign();
++
++  // Make sure the frame is aligned.
++  FrameSize = alignTo(FrameSize, StackAlign);
++
++  // Update frame info.
++  MFI.setStackSize(FrameSize);
++}
++
++// TODO: seems ok
++void simFrameLowering::emitPrologue(MachineFunction &MF,
++                                    MachineBasicBlock &MBB) const {
++  MachineFrameInfo &MFI = MF.getFrameInfo();
++  auto *FI = MF.getInfo<simFunctionInfo>();
++  const simRegisterInfo *RI = STI.getRegisterInfo();
++  MachineBasicBlock::iterator MBBI = MBB.begin();
++
++  Register FPReg = getFPReg(STI);
++  Register SPReg = getSPReg(STI);
++  // Register BPReg = simABI::getBPReg();
++
++  // Debug location must be unknown since the first debug location is used
++  // to determine the end of the prologue.
++  DebugLoc DL;
++
++  // Since spillCalleeSavedRegisters may have inserted a libcall, skip past
++  // any instructions marked as FrameSetup
++  while (MBBI != MBB.end() && MBBI->getFlag(MachineInstr::FrameSetup))
++    ++MBBI;
++
++  // Determine the correct frame layout
++  determineFrameLayout(MF);
++
++  uint64_t StackSize = alignTo(MFI.getStackSize(), getStackAlign());
++  MFI.setStackSize(StackSize);
++
++  if (!isInt<16>(StackSize)) {
++    llvm_unreachable("Stack offs won't fit in sim::LDi");
++  }
++
++  // Early exit if there is no need to allocate on the stack
++  if (StackSize == 0 && !MFI.adjustsStack())
++    return;
++
++  // Allocate space on the stack if necessary.
++  adjustReg(MBB, MBBI, DL, SPReg, SPReg, -StackSize, MachineInstr::FrameSetup);
++
++  const auto &CSI = MFI.getCalleeSavedInfo();
++
++  // The frame pointer is callee-saved, and code has been generated for us to
++  // save it to the stack. We need to skip over the storing of callee-saved
++  // registers as the frame pointer must be modified after it has been saved
++  // to the stack, not before.
++  // FIXME: assumes exactly one instruction is used to save each callee-saved
++  // register.
++  std::advance(MBBI, CSI.size());
++
++  if (!hasFP(MF)) {
++    return;
++  }
++
++  // Generate new FP.
++  adjustReg(MBB, MBBI, DL, FPReg, SPReg, StackSize - FI->getVarArgsSaveSize(),
++            MachineInstr::FrameSetup);
++
++  if (RI->hasStackRealignment(MF)) {
++    llvm_unreachable(""); // TODO: realigned stack
++  }
++}
++
++// TODO: seems ok
++void simFrameLowering::emitEpilogue(MachineFunction &MF,
++                                    MachineBasicBlock &MBB) const {
++  const simRegisterInfo *RI = STI.getRegisterInfo();
++  MachineFrameInfo &MFI = MF.getFrameInfo();
++  auto *UFI = MF.getInfo<simFunctionInfo>();
++  Register FPReg = getFPReg(STI);
++  Register SPReg = getSPReg(STI);
++
++  // Get the insert location for the epilogue. If there were no terminators in
++  // the block, get the last instruction.
++  MachineBasicBlock::iterator MBBI = MBB.end();
++  DebugLoc DL;
++  if (!MBB.empty()) {
++    MBBI = MBB.getFirstTerminator();
++    if (MBBI == MBB.end())
++      MBBI = MBB.getLastNonDebugInstr();
++    DL = MBBI->getDebugLoc();
++
++    // If this is not a terminator, the actual insert location should be after
++    // the last instruction.
++    if (!MBBI->isTerminator())
++      MBBI = std::next(MBBI);
++
++    // TODO: is it necessary?
++    while (MBBI != MBB.begin() &&
++           std::prev(MBBI)->getFlag(MachineInstr::FrameDestroy))
++      --MBBI;
++  }
++
++  const auto &CSI = MFI.getCalleeSavedInfo();
++
++  // Skip to before the restores of callee-saved registers
++  // FIXME: assumes exactly one instruction is used to restore each
++  // callee-saved register.
++  auto LastFrameDestroy = MBBI;
++  if (!CSI.empty())
++    LastFrameDestroy = std::prev(MBBI, CSI.size());
++
++  uint64_t StackSize = MFI.getStackSize();
++  uint64_t FPOffset = StackSize - UFI->getVarArgsSaveSize();
++
++  // Restore the stack pointer using the value of the frame pointer. Only
++  // necessary if the stack pointer was modified, meaning the stack size is
++  // unknown.
++  if (RI->hasStackRealignment(MF) || MFI.hasVarSizedObjects()) {
++    llvm_unreachable("");
++    assert(hasFP(MF) && "frame pointer should not have been eliminated");
++    adjustReg(MBB, LastFrameDestroy, DL, SPReg, FPReg, -FPOffset,
++              MachineInstr::FrameDestroy);
++  }
++
++  // Deallocate stack
++  adjustReg(MBB, MBBI, DL, SPReg, SPReg, StackSize, MachineInstr::FrameDestroy);
++}
++
++// TODO: seems ok
++bool simFrameLowering::spillCalleeSavedRegisters(
++    MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
++    ArrayRef<CalleeSavedInfo> CSI, const TargetRegisterInfo *TRI) const {
++  if (CSI.empty())
++    return true;
++
++  MachineFunction *MF = MBB.getParent();
++  const TargetInstrInfo &TII = *MF->getSubtarget().getInstrInfo();
++
++  for (auto &CS : CSI) {
++    // Insert the spill to the stack frame.
++    Register Reg = CS.getReg();
++    const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
++    TII.storeRegToStackSlot(MBB, MI, Reg, !MBB.isLiveIn(Reg), CS.getFrameIdx(),
++                            RC, TRI);
++  }
++
++  return true;
++}
++
++// TODO: seems ok
++bool simFrameLowering::restoreCalleeSavedRegisters(
++    MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
++    MutableArrayRef<CalleeSavedInfo> CSI, const TargetRegisterInfo *TRI) const {
++  if (CSI.empty())
++    return true;
++
++  MachineFunction *MF = MBB.getParent();
++  const TargetInstrInfo &TII = *MF->getSubtarget().getInstrInfo();
++
++  // Insert in reverse order.
++  // loadRegFromStackSlot can insert multiple instructions.
++  for (auto &CS : reverse(CSI)) {
++    Register Reg = CS.getReg();
++    const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
++    TII.loadRegFromStackSlot(MBB, MI, Reg, CS.getFrameIdx(), RC, TRI);
++    assert(MI != MBB.begin() && "loadRegFromStackSlot didn't insert any code!");
++  }
++
++  return true;
++}
++
++// TODO: seems ok
++void simFrameLowering::processFunctionBeforeFrameFinalized(
++    MachineFunction &MF, RegScavenger *RS) const {
++  MachineFrameInfo &MFI = MF.getFrameInfo();
++  auto *UFI = MF.getInfo<simFunctionInfo>();
++
++  if (!isInt<16>(MFI.estimateStackSize(MF))) {
++    llvm_unreachable(""); // TODO: scavenging?
++  }
++
++  if (MFI.getCalleeSavedInfo().empty()) {
++    UFI->setCalleeSavedStackSize(0);
++    return;
++  }
++
++  unsigned Size = 0;
++  for (const auto &Info : MFI.getCalleeSavedInfo()) {
++    int FrameIdx = Info.getFrameIdx();
++    if (MFI.getStackID(FrameIdx) != TargetStackID::Default)
++      continue;
++
++    Size += MFI.getObjectSize(FrameIdx);
++  }
++  UFI->setCalleeSavedStackSize(Size);
++}
++
++// Eliminate ADJCALLSTACKDOWN, ADJCALLSTACKUP pseudo instructions.
++// TODO: seems ok
++MachineBasicBlock::iterator simFrameLowering::eliminateCallFramePseudoInstr(
++    MachineFunction &MF, MachineBasicBlock &MBB,
++    MachineBasicBlock::iterator MI) const {
++  Register SPReg = getSPReg(STI);
++  DebugLoc DL = MI->getDebugLoc();
++
++  if (!hasReservedCallFrame(MF)) {
++    // If space has not been reserved for a call frame, ADJCALLSTACKDOWN and
++    // ADJCALLSTACKUP must be converted to instructions manipulating the stack
++    // pointer. This is necessary when there is a variable length stack
++    // allocation (e.g. alloca), which means it's not possible to allocate
++    // space for outgoing arguments from within the function prologue.
++    int64_t Amount = MI->getOperand(0).getImm();
++
++    if (Amount != 0) {
++      // Ensure the stack remains aligned after adjustment.
++      Amount = alignSPAdjust(Amount);
++
++      if (MI->getOpcode() == sim::ADJCALLSTACKDOWN)
++        Amount = -Amount;
++
++      adjustReg(MBB, MI, DL, SPReg, SPReg, Amount, MachineInstr::NoFlags);
++    }
++  }
++
++  return MBB.erase(MI);
++}
++
++bool simFrameLowering::hasFP(const MachineFunction &MF) const {
++  const TargetRegisterInfo *RegInfo = MF.getSubtarget().getRegisterInfo();
++
++  const MachineFrameInfo &MFI = MF.getFrameInfo();
++  return MF.getTarget().Options.DisableFramePointerElim(
++             MF) || // -fomit-frame-pointer
++         RegInfo->hasStackRealignment(MF) ||
++         MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken();
++}
++
++bool simFrameLowering::hasBP(const MachineFunction &MF) const {
++  const MachineFrameInfo &MFI = MF.getFrameInfo();
++  const TargetRegisterInfo *TRI = STI.getRegisterInfo();
++
++  return MFI.hasVarSizedObjects() && TRI->hasStackRealignment(MF);
++}
++
++// TODO: rewrite!
++StackOffset simFrameLowering::getFrameIndexReference(const MachineFunction &MF,
++                                                     int FI,
++                                                     Register &FrameReg) const {
++  const MachineFrameInfo &MFI = MF.getFrameInfo();
++  const TargetRegisterInfo *RI = MF.getSubtarget().getRegisterInfo();
++  const auto *UFI = MF.getInfo<simFunctionInfo>();
++
++  // Callee-saved registers should be referenced relative to the stack
++  // pointer (positive offset), otherwise use the frame pointer (negative
++  // offset).
++  const auto &CSI = MFI.getCalleeSavedInfo();
++  int MinCSFI = 0;
++  int MaxCSFI = -1;
++  int Offset;
++
++  Offset = MFI.getObjectOffset(FI) - getOffsetOfLocalArea() +
++           MFI.getOffsetAdjustment();
++
++  if (CSI.size()) {
++    MinCSFI = CSI[0].getFrameIdx();
++    MaxCSFI = CSI[CSI.size() - 1].getFrameIdx();
++  }
++
++  if (FI >= MinCSFI && FI <= MaxCSFI) {
++    FrameReg = getSPReg(STI);
++    Offset += MFI.getStackSize();
++  } else if (RI->hasStackRealignment(MF) && !MFI.isFixedObjectIndex(FI)) {
++    // TODO: realigned stack
++    llvm_unreachable("");
++  } else {
++    // TODO: what's going on here
++    FrameReg = RI->getFrameRegister(MF);
++    if (hasFP(MF)) {
++      Offset += UFI->getVarArgsSaveSize();
++    } else {
++      Offset += MFI.getStackSize();
++    }
++  }
++
++  return StackOffset::getFixed(Offset);
++}
++
++// Not preserve stack space within prologue for outgoing variables when the
++// function contains variable size objects or there are vector objects accessed
++// by the frame pointer.
++// Let eliminateCallFramePseudoInstr preserve stack space for it.
++bool simFrameLowering::hasReservedCallFrame(const MachineFunction &MF) const {
++  return !MF.getFrameInfo().hasVarSizedObjects();
++}
+diff --git a/llvm/lib/Target/sim/simFrameLowering.h b/llvm/lib/Target/sim/simFrameLowering.h
+new file mode 100644
+index 000000000000..deefbc5a8d44
+--- /dev/null
++++ b/llvm/lib/Target/sim/simFrameLowering.h
+@@ -0,0 +1,69 @@
++#ifndef __LLVM_LIB_TARGET_SIM_SIMFRAMELOWERING_H__
++#define __LLVM_LIB_TARGET_SIM_SIMFRAMELOWERING_H__
++
++#include "sim.h"
++#include "llvm/CodeGen/MachineBasicBlock.h"
++#include "llvm/CodeGen/MachineFrameInfo.h"
++#include "llvm/CodeGen/TargetFrameLowering.h"
++
++namespace llvm {
++
++class MachineFunction;
++class simSubtarget;
++class simInstrInfo;
++
++class simFrameLowering : public TargetFrameLowering {
++public:
++  simFrameLowering(const simSubtarget &STI)
++      : TargetFrameLowering(TargetFrameLowering::StackGrowsDown, Align(4), 0),
++        STI(STI) {}
++
++  void emitPrologue(MachineFunction &MF, MachineBasicBlock &MBB) const override;
++  void emitEpilogue(MachineFunction &MF, MachineBasicBlock &MBB) const override;
++
++  void determineFrameLayout(MachineFunction &MF) const;
++
++  void determineCalleeSaves(MachineFunction &MF, BitVector &SavedRegs,
++                            RegScavenger *RS) const override;
++
++  bool spillCalleeSavedRegisters(MachineBasicBlock &MBB,
++                                 MachineBasicBlock::iterator MI,
++                                 ArrayRef<CalleeSavedInfo> CSI,
++                                 const TargetRegisterInfo *TRI) const override;
++
++  bool
++  restoreCalleeSavedRegisters(MachineBasicBlock &MBB,
++                              MachineBasicBlock::iterator MI,
++                              MutableArrayRef<CalleeSavedInfo> CSI,
++                              const TargetRegisterInfo *TRI) const override;
++
++  void processFunctionBeforeFrameFinalized(MachineFunction &MF,
++                                           RegScavenger *RS) const override;
++
++  bool hasFP(const MachineFunction &MF) const override;
++  bool hasBP(const MachineFunction &MF) const;
++
++  MachineBasicBlock::iterator
++  eliminateCallFramePseudoInstr(MachineFunction &MF, MachineBasicBlock &MBB,
++                                MachineBasicBlock::iterator I) const override;
++
++  StackOffset getFrameIndexReference(const MachineFunction &MF, int FI,
++                                     Register &FrameReg) const override;
++
++  bool hasReservedCallFrame(const MachineFunction &MF) const override;
++
++private:
++  void adjustStackToMatchRecords(MachineBasicBlock &MBB,
++                                 MachineBasicBlock::iterator MI,
++                                 bool Allocate) const;
++
++  void adjustReg(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
++                 const DebugLoc &DL, Register DestReg, Register SrcReg,
++                 int64_t Val, MachineInstr::MIFlag Flag) const;
++
++  const simSubtarget &STI;
++};
++
++} // end namespace llvm
++
++#endif // __LLVM_LIB_TARGET_SIM_SIMFRAMELOWERING_H__
+diff --git a/llvm/lib/Target/sim/simISelDagToDag.cpp b/llvm/lib/Target/sim/simISelDagToDag.cpp
+new file mode 100644
+index 000000000000..a972304e3f8d
+--- /dev/null
++++ b/llvm/lib/Target/sim/simISelDagToDag.cpp
+@@ -0,0 +1,138 @@
++#include "MCTargetDesc/simMCTargetDesc.h"
++#include "sim.h"
++#include "simTargetMachine.h"
++#include "simMatInt.h"
++#include "llvm/CodeGen/MachineFrameInfo.h"
++#include "llvm/CodeGen/MachineFunction.h"
++#include "llvm/CodeGen/MachineInstrBuilder.h"
++#include "llvm/CodeGen/MachineRegisterInfo.h"
++#include "llvm/CodeGen/SelectionDAG.h"
++#include "llvm/CodeGen/SelectionDAGISel.h"
++#include "llvm/CodeGen/TargetLowering.h"
++#include "llvm/IR/CallingConv.h"
++#include "llvm/IR/Constants.h"
++#include "llvm/IR/DerivedTypes.h"
++#include "llvm/IR/Function.h"
++#include "llvm/IR/Intrinsics.h"
++#include "llvm/IR/LLVMContext.h"
++#include "llvm/Support/Compiler.h"
++#include "llvm/Support/Debug.h"
++#include "llvm/Support/ErrorHandling.h"
++#include "llvm/Support/raw_ostream.h"
++
++using namespace llvm;
++
++#define DEBUG_TYPE "sim-isel"
++
++namespace {
++
++class simDAGToDAGISel : public SelectionDAGISel {
++  const simSubtarget *Subtarget = nullptr;
++
++public:
++  simDAGToDAGISel(simTargetMachine &TM, CodeGenOpt::Level OptLevel)
++      : SelectionDAGISel(TM, OptLevel) {}
++
++  bool runOnMachineFunction(MachineFunction &MF) override {
++    Subtarget = &MF.getSubtarget<simSubtarget>();
++    return SelectionDAGISel::runOnMachineFunction(MF);
++  }
++
++  bool SelectAddrFI(SDValue Addr, SDValue &Base);
++  bool SelectBaseAddr(SDValue Addr, SDValue &Base);
++
++  void Select(SDNode *N) override;
++
++  StringRef getPassName() const override {
++    return "sim DAG->DAG Pattern Instruction Selection";
++  }
++
++// Include the pieces autogenerated from the target description.
++#include "simGenDAGISel.inc"
++};
++
++} // end anonymous namespace
++
++/// This pass converts a legalized DAG into a sim-specific DAG, ready for
++/// instruction scheduling.
++FunctionPass *llvm::createsimISelDag(simTargetMachine &TM,
++                                     CodeGenOpt::Level OptLevel) {
++  return new simDAGToDAGISel(TM, OptLevel);
++}
++
++bool simDAGToDAGISel::SelectAddrFI(SDValue Addr, SDValue &Base) {
++  if (auto *FIN = dyn_cast<FrameIndexSDNode>(Addr)) {
++    Base = CurDAG->getTargetFrameIndex(FIN->getIndex(), MVT::i32);
++    return true;
++  }
++  return false;
++}
++
++bool simDAGToDAGISel::SelectBaseAddr(SDValue Addr, SDValue &Base) {
++  if (auto *FIN = dyn_cast<FrameIndexSDNode>(Addr))
++    Base = CurDAG->getTargetFrameIndex(FIN->getIndex(), MVT::i32);
++  else
++    Base = Addr;
++  return true;
++}
++
++static SDNode *selectImm(SelectionDAG *CurDAG, const SDLoc &DL, const MVT VT,
++                         int64_t Imm, const simSubtarget &Subtarget) {
++  MVT XLenVT = Subtarget.getXLenVT();
++  simMatInt::InstSeq Seq =
++      simMatInt::generateInstSeq(Imm, Subtarget.getFeatureBits());
++
++  SDNode *Result = nullptr;
++  SDValue SrcReg = CurDAG->getRegister(sim::X0, XLenVT);
++  for (simMatInt::Inst &Inst : Seq) {
++    SDValue SDImm = CurDAG->getTargetConstant(Inst.Imm, DL, XLenVT);
++    if (Inst.Opc == sim::LUI)
++      Result = CurDAG->getMachineNode(sim::LUI, DL, XLenVT, SDImm);
++    else
++      Result = CurDAG->getMachineNode(Inst.Opc, DL, XLenVT, SrcReg, SDImm);
++
++    // Only the first instruction has X0 as its source.
++    SrcReg = SDValue(Result, 0);
++  }
++
++  return Result;
++}
++
++void simDAGToDAGISel::Select(SDNode *Node) {
++  if (Node->isMachineOpcode()) {
++    LLVM_DEBUG(dbgs() << "== "; Node->dump(CurDAG); dbgs() << "\n");
++    Node->setNodeId(-1);
++    return;
++  }
++  unsigned Opcode = Node->getOpcode();
++  SDLoc DL(Node);
++  MVT XLenVT = Subtarget->getXLenVT();
++  MVT VT = Node->getSimpleValueType(0);
++  switch (Opcode) {
++  case ISD::Constant: {
++    auto *ConstNode = cast<ConstantSDNode>(Node);
++    if (VT == XLenVT && ConstNode->isZero()) {
++      SDValue New =
++          CurDAG->getCopyFromReg(CurDAG->getEntryNode(), DL, sim::X0, XLenVT);
++      ReplaceNode(Node, New.getNode());
++      return;
++    }
++
++    int64_t Imm = ConstNode->getSExtValue();
++    ReplaceNode(Node, selectImm(CurDAG, DL, VT, Imm, *Subtarget));
++    return;
++  }
++  case ISD::FrameIndex: {
++    SDValue Imm = CurDAG->getTargetConstant(0, DL, MVT::i32);
++    int FI = cast<FrameIndexSDNode>(Node)->getIndex();
++    SDValue TFI = CurDAG->getTargetFrameIndex(FI, VT);
++    ReplaceNode(Node, CurDAG->getMachineNode(sim::ADDI, DL, VT, TFI, Imm));
++    return;
++  }
++
++  default: 
++    dbgs() << "OPCODE: " << Opcode << '\n';
++    Node->dump();
++  }
++  SelectCode(Node);
++}
+diff --git a/llvm/lib/Target/sim/simISelLowering.cpp b/llvm/lib/Target/sim/simISelLowering.cpp
+new file mode 100644
+index 000000000000..7b606d9dc612
+--- /dev/null
++++ b/llvm/lib/Target/sim/simISelLowering.cpp
+@@ -0,0 +1,1024 @@
++#include "simISelLowering.h"
++#include "sim.h"
++#include "simMachineFunctionInfo.h"
++#include "simRegisterInfo.h"
++#include "simSubtarget.h"
++#include "simTargetMachine.h"
++#include "llvm/CodeGen/CallingConvLower.h"
++#include "llvm/CodeGen/ISDOpcodes.h"
++#include "llvm/CodeGen/MachineFrameInfo.h"
++#include "llvm/CodeGen/MachineFunction.h"
++#include "llvm/CodeGen/MachineInstrBuilder.h"
++#include "llvm/CodeGen/MachineJumpTableInfo.h"
++#include "llvm/CodeGen/MachineOperand.h"
++#include "llvm/CodeGen/MachineRegisterInfo.h"
++#include "llvm/CodeGen/Register.h"
++#include "llvm/CodeGen/SelectionDAGNodes.h"
++#include "llvm/CodeGen/ValueTypes.h"
++#include "llvm/IR/CallingConv.h"
++#include "llvm/IR/Intrinsics.h"
++#include "llvm/Support/Debug.h"
++#include "llvm/Support/ErrorHandling.h"
++#include "llvm/Support/MachineValueType.h"
++#include <algorithm>
++
++#define DEBUG_TYPE "sim-lower"
++
++using namespace llvm;
++
++static const MCPhysReg ArgGPRs[] = {sim::X10, sim::X11, sim::X12, sim::X13,
++                                    sim::X14, sim::X15, sim::X16, sim::X17};
++
++void simTargetLowering::ReplaceNodeResults(SDNode *N,
++                                           SmallVectorImpl<SDValue> &Results,
++                                           SelectionDAG &DAG) const {
++  llvm_unreachable("");
++}
++
++simTargetLowering::simTargetLowering(const TargetMachine &TM,
++                                     const simSubtarget &STI)
++    : TargetLowering(TM), Subtarget(STI) {
++  addRegisterClass(MVT::i32, &sim::GPRRegClass);
++
++  computeRegisterProperties(Subtarget.getRegisterInfo());
++
++  setStackPointerRegisterToSaveRestore(sim::X2);
++
++  // setSchedulingPreference(Sched::Source);
++
++  for (unsigned Opc = 0; Opc < ISD::BUILTIN_OP_END; ++Opc)
++    setOperationAction(Opc, MVT::i32, Expand);
++
++  setOperationAction(ISD::ADD, MVT::i32, Legal);
++  setOperationAction(ISD::SUB, MVT::i32, Legal);
++  setOperationAction(ISD::MUL, MVT::i32, Legal);
++  // ...
++  setOperationAction(ISD::LOAD, MVT::i32, Legal);
++  setOperationAction(ISD::STORE, MVT::i32, Legal);
++
++  setOperationAction(ISD::Constant, MVT::i32, Legal);
++  setOperationAction(ISD::UNDEF, MVT::i32, Legal);
++
++  setOperationAction(ISD::SRA, MVT::i32, Legal);
++  setOperationAction(ISD::SRL, MVT::i32, Legal);
++  setOperationAction(ISD::SHL, MVT::i32, Legal);
++
++  setOperationAction(ISD::BR_CC, MVT::i32, Custom);
++
++  setOperationAction(ISD::FRAMEADDR, MVT::i32, Legal);
++  // setOperationAction(ISD::FrameIndex, MVT::i32, Custom);
++  // setOperationAction(ISD::GlobalAddress, MVT::i32, Custom);
++}
++
++const char *simTargetLowering::getTargetNodeName(unsigned Opcode) const {
++  switch (Opcode) {
++  case simISD::CALL:
++    return "simISD::CALL";
++  case simISD::RET_FLAG:
++    return "simISD::RET";
++  }
++  return nullptr;
++}
++
++// TODO: rewrite
++static SDValue convertValVTToLocVT(SelectionDAG &DAG, SDValue Val,
++                                   const CCValAssign &VA, const SDLoc &DL,
++                                   const simSubtarget &Subtarget) {
++  EVT LocVT = VA.getLocVT();
++
++  if (VA.getValVT() == MVT::f32)
++    llvm_unreachable("");
++
++  switch (VA.getLocInfo()) {
++  default:
++    llvm_unreachable("Unexpected CCValAssign::LocInfo");
++  case CCValAssign::Full:
++    break;
++  case CCValAssign::BCvt:
++    llvm_unreachable("");
++    Val = DAG.getNode(ISD::BITCAST, DL, LocVT, Val);
++    break;
++  }
++  return Val;
++}
++
++// Convert Val to a ValVT. Should not be called for CCValAssign::Indirect
++// values.
++// TODO: rewrite
++static SDValue convertLocVTToValVT(SelectionDAG &DAG, SDValue Val,
++                                   const CCValAssign &VA, const SDLoc &DL,
++                                   const simSubtarget &Subtarget) {
++  if (VA.getValVT() == MVT::f32)
++    llvm_unreachable("");
++
++  switch (VA.getLocInfo()) {
++  default:
++    llvm_unreachable("Unexpected CCValAssign::LocInfo");
++  case CCValAssign::Full:
++    break;
++  case CCValAssign::BCvt:
++    llvm_unreachable("");
++    Val = DAG.getNode(ISD::BITCAST, DL, VA.getValVT(), Val);
++  }
++  return Val;
++}
++
++//===----------------------------------------------------------------------===//
++//  Misc Lower Operation implementation
++//===----------------------------------------------------------------------===//
++
++#include "simGenCallingConv.inc"
++
++//===----------------------------------------------------------------------===//
++//                  Call Calling Convention Implementation
++//===----------------------------------------------------------------------===//
++
++// Pass a 2*XLEN argument that has been split into two XLEN values through
++// registers or the stack as necessary.
++static bool CC_simAssign2XLen(unsigned XLen, CCState &State, CCValAssign VA1,
++                              ISD::ArgFlagsTy ArgFlags1, unsigned ValNo2,
++                              MVT ValVT2, MVT LocVT2,
++                              ISD::ArgFlagsTy ArgFlags2) {
++  unsigned XLenInBytes = XLen / 8;
++  if (Register Reg = State.AllocateReg(ArgGPRs)) {
++    // At least one half can be passed via register.
++    State.addLoc(CCValAssign::getReg(VA1.getValNo(), VA1.getValVT(), Reg,
++                                     VA1.getLocVT(), CCValAssign::Full));
++  } else {
++    // Both halves must be passed on the stack, with proper alignment.
++    Align StackAlign =
++        std::max(Align(XLenInBytes), ArgFlags1.getNonZeroOrigAlign());
++    State.addLoc(
++        CCValAssign::getMem(VA1.getValNo(), VA1.getValVT(),
++                            State.AllocateStack(XLenInBytes, StackAlign),
++                            VA1.getLocVT(), CCValAssign::Full));
++    State.addLoc(CCValAssign::getMem(
++        ValNo2, ValVT2, State.AllocateStack(XLenInBytes, Align(XLenInBytes)),
++        LocVT2, CCValAssign::Full));
++    return false;
++  }
++
++  if (Register Reg = State.AllocateReg(ArgGPRs)) {
++    // The second half can also be passed via register.
++    State.addLoc(
++        CCValAssign::getReg(ValNo2, ValVT2, Reg, LocVT2, CCValAssign::Full));
++  } else {
++    // The second half is passed via the stack, without additional alignment.
++    State.addLoc(CCValAssign::getMem(
++        ValNo2, ValVT2, State.AllocateStack(XLenInBytes, Align(XLenInBytes)),
++        LocVT2, CCValAssign::Full));
++  }
++
++  return false;
++}
++
++// Implements the RISC-V calling convention. Returns true upon failure.
++static bool CC_sim(const DataLayout &DL, simABI::ABI ABI, unsigned ValNo,
++                   MVT ValVT, MVT LocVT, CCValAssign::LocInfo LocInfo,
++                   ISD::ArgFlagsTy ArgFlags, CCState &State, bool IsFixed,
++                   bool IsRet, Type *OrigTy, const simTargetLowering &TLI,
++                   Optional<unsigned> FirstMaskArgument) {
++  unsigned XLen = DL.getLargestLegalIntTypeSizeInBits();
++  assert(XLen == 32 || XLen == 64);
++  MVT XLenVT = XLen == 32 ? MVT::i32 : MVT::i64;
++
++  // Any return value split in to more than two values can't be returned
++  // directly. Vectors are returned via the available vector registers.
++  if (!LocVT.isVector() && IsRet && ValNo > 1)
++    return true;
++
++  // UseGPRForF16_F32 if targeting one of the soft-float ABIs, if passing a
++  // variadic argument, or if no F16/F32 argument registers are available.
++  bool UseGPRForF16_F32 = true;
++  // UseGPRForF64 if targeting soft-float ABIs or an FLEN=32 ABI, if passing a
++  // variadic argument, or if no F64 argument registers are available.
++  bool UseGPRForF64 = true;
++
++  // From this point on, rely on UseGPRForF16_F32, UseGPRForF64 and
++  // similar local variables rather than directly checking against the target
++  // ABI.
++
++  if (UseGPRForF16_F32 && (ValVT == MVT::f16 || ValVT == MVT::f32)) {
++    LocVT = XLenVT;
++    LocInfo = CCValAssign::BCvt;
++  } else if (UseGPRForF64 && XLen == 64 && ValVT == MVT::f64) {
++    LocVT = MVT::i64;
++    LocInfo = CCValAssign::BCvt;
++  }
++
++  // If this is a variadic argument, the RISC-V calling convention requires
++  // that it is assigned an 'even' or 'aligned' register if it has 8-byte
++  // alignment (RV32) or 16-byte alignment (RV64). An aligned register should
++  // be used regardless of whether the original argument was split during
++  // legalisation or not. The argument will not be passed by registers if the
++  // original type is larger than 2*XLEN, so the register alignment rule does
++  // not apply.
++  unsigned TwoXLenInBytes = (2 * XLen) / 8;
++  if (!IsFixed && ArgFlags.getNonZeroOrigAlign() == TwoXLenInBytes &&
++      DL.getTypeAllocSize(OrigTy) == TwoXLenInBytes) {
++    unsigned RegIdx = State.getFirstUnallocated(ArgGPRs);
++    // Skip 'odd' register if necessary.
++    if (RegIdx != array_lengthof(ArgGPRs) && RegIdx % 2 == 1)
++      State.AllocateReg(ArgGPRs);
++  }
++
++  SmallVectorImpl<CCValAssign> &PendingLocs = State.getPendingLocs();
++  SmallVectorImpl<ISD::ArgFlagsTy> &PendingArgFlags =
++      State.getPendingArgFlags();
++
++  assert(PendingLocs.size() == PendingArgFlags.size() &&
++         "PendingLocs and PendingArgFlags out of sync");
++
++  // Handle passing f64 on RV32D with a soft float ABI or when floating point
++  // registers are exhausted.
++  if (UseGPRForF64 && XLen == 32 && ValVT == MVT::f64) {
++    assert(!ArgFlags.isSplit() && PendingLocs.empty() &&
++           "Can't lower f64 if it is split");
++    // Depending on available argument GPRS, f64 may be passed in a pair of
++    // GPRs, split between a GPR and the stack, or passed completely on the
++    // stack. LowerCall/LowerFormalArguments/LowerReturn must recognise these
++    // cases.
++    Register Reg = State.AllocateReg(ArgGPRs);
++    LocVT = MVT::i32;
++    if (!Reg) {
++      unsigned StackOffset = State.AllocateStack(8, Align(8));
++      State.addLoc(
++          CCValAssign::getMem(ValNo, ValVT, StackOffset, LocVT, LocInfo));
++      return false;
++    }
++    if (!State.AllocateReg(ArgGPRs))
++      State.AllocateStack(4, Align(4));
++    State.addLoc(CCValAssign::getReg(ValNo, ValVT, Reg, LocVT, LocInfo));
++    return false;
++  }
++
++  // Split arguments might be passed indirectly, so keep track of the pending
++  // values. Split vectors are passed via a mix of registers and indirectly, so
++  // treat them as we would any other argument.
++  if (ValVT.isScalarInteger() && (ArgFlags.isSplit() || !PendingLocs.empty())) {
++    LocVT = XLenVT;
++    LocInfo = CCValAssign::Indirect;
++    PendingLocs.push_back(
++        CCValAssign::getPending(ValNo, ValVT, LocVT, LocInfo));
++    PendingArgFlags.push_back(ArgFlags);
++    if (!ArgFlags.isSplitEnd()) {
++      return false;
++    }
++  }
++
++  // If the split argument only had two elements, it should be passed directly
++  // in registers or on the stack.
++  if (ValVT.isScalarInteger() && ArgFlags.isSplitEnd() &&
++      PendingLocs.size() <= 2) {
++    assert(PendingLocs.size() == 2 && "Unexpected PendingLocs.size()");
++    // Apply the normal calling convention rules to the first half of the
++    // split argument.
++    CCValAssign VA = PendingLocs[0];
++    ISD::ArgFlagsTy AF = PendingArgFlags[0];
++    PendingLocs.clear();
++    PendingArgFlags.clear();
++    return CC_simAssign2XLen(XLen, State, VA, AF, ValNo, ValVT, LocVT,
++                             ArgFlags);
++  }
++
++  // Allocate to a register if possible, or else a stack slot.
++  Register Reg = State.AllocateReg(ArgGPRs);
++  unsigned StoreSizeBytes = XLen / 8;
++  Align StackAlign = Align(XLen / 8);
++
++  unsigned StackOffset =
++      Reg ? 0 : State.AllocateStack(StoreSizeBytes, StackAlign);
++
++  // If we reach this point and PendingLocs is non-empty, we must be at the
++  // end of a split argument that must be passed indirectly.
++  if (!PendingLocs.empty()) {
++    assert(ArgFlags.isSplitEnd() && "Expected ArgFlags.isSplitEnd()");
++    assert(PendingLocs.size() > 2 && "Unexpected PendingLocs.size()");
++
++    for (auto &It : PendingLocs) {
++      if (Reg)
++        It.convertToReg(Reg);
++      else
++        It.convertToMem(StackOffset);
++      State.addLoc(It);
++    }
++    PendingLocs.clear();
++    PendingArgFlags.clear();
++    return false;
++  }
++
++  if (Reg) {
++    State.addLoc(CCValAssign::getReg(ValNo, ValVT, Reg, LocVT, LocInfo));
++    return false;
++  }
++
++  // When a floating-point value is passed on the stack, no bit-conversion is
++  // needed.
++  if (ValVT.isFloatingPoint()) {
++    LocVT = ValVT;
++    LocInfo = CCValAssign::Full;
++  }
++  State.addLoc(CCValAssign::getMem(ValNo, ValVT, StackOffset, LocVT, LocInfo));
++  return false;
++}
++
++static Align getPrefTypeAlign(EVT VT, SelectionDAG &DAG) {
++  return DAG.getDataLayout().getPrefTypeAlign(
++      VT.getTypeForEVT(*DAG.getContext()));
++}
++
++void simTargetLowering::analyzeOutputArgs(
++    MachineFunction &MF, CCState &CCInfo,
++    const SmallVectorImpl<ISD::OutputArg> &Outs, bool IsRet,
++    CallLoweringInfo *CLI, simCCAssignFn Fn) const {
++  unsigned NumArgs = Outs.size();
++
++  Optional<unsigned> FirstMaskArgument;
++  for (unsigned i = 0; i != NumArgs; i++) {
++    MVT ArgVT = Outs[i].VT;
++    ISD::ArgFlagsTy ArgFlags = Outs[i].Flags;
++    Type *OrigTy = CLI ? CLI->getArgs()[Outs[i].OrigArgIndex].Ty : nullptr;
++
++    simABI::ABI ABI = MF.getSubtarget<simSubtarget>().getTargetABI();
++    if (Fn(MF.getDataLayout(), ABI, i, ArgVT, ArgVT, CCValAssign::Full,
++           ArgFlags, CCInfo, Outs[i].IsFixed, IsRet, OrigTy, *this,
++           FirstMaskArgument)) {
++      LLVM_DEBUG(dbgs() << "OutputArg #" << i << " has unhandled type "
++                        << EVT(ArgVT).getEVTString() << "\n");
++      llvm_unreachable(nullptr);
++    }
++  }
++}
++
++void simTargetLowering::analyzeInputArgs(
++    MachineFunction &MF, CCState &CCInfo,
++    const SmallVectorImpl<ISD::InputArg> &Ins, bool IsRet,
++    simCCAssignFn Fn) const {
++  unsigned NumArgs = Ins.size();
++  FunctionType *FType = MF.getFunction().getFunctionType();
++
++  Optional<unsigned> FirstMaskArgument;
++
++  for (unsigned i = 0; i != NumArgs; ++i) {
++    MVT ArgVT = Ins[i].VT;
++    ISD::ArgFlagsTy ArgFlags = Ins[i].Flags;
++
++    Type *ArgTy = nullptr;
++    if (IsRet)
++      ArgTy = FType->getReturnType();
++    else if (Ins[i].isOrigArg())
++      ArgTy = FType->getParamType(Ins[i].getOrigArgIndex());
++
++    simABI::ABI ABI = MF.getSubtarget<simSubtarget>().getTargetABI();
++    if (Fn(MF.getDataLayout(), ABI, i, ArgVT, ArgVT, CCValAssign::Full,
++           ArgFlags, CCInfo, /*IsFixed=*/true, IsRet, ArgTy, *this,
++           FirstMaskArgument)) {
++      LLVM_DEBUG(dbgs() << "InputArg #" << i << " has unhandled type "
++                        << EVT(ArgVT).getEVTString() << '\n');
++      llvm_unreachable(nullptr);
++    }
++  }
++}
++
++// TODO: rewrite
++// Lower a call to a callseq_start + CALL + callseq_end chain, and add input
++// and output parameter nodes.
++SDValue simTargetLowering::LowerCall(CallLoweringInfo &CLI,
++                                     SmallVectorImpl<SDValue> &InVals) const {
++  SelectionDAG &DAG = CLI.DAG;
++  SDLoc &DL = CLI.DL;
++  SmallVectorImpl<ISD::OutputArg> &Outs = CLI.Outs;
++  SmallVectorImpl<SDValue> &OutVals = CLI.OutVals;
++  SmallVectorImpl<ISD::InputArg> &Ins = CLI.Ins;
++  SDValue Chain = CLI.Chain;
++  SDValue Callee = CLI.Callee;
++  bool &IsTailCall = CLI.IsTailCall;
++  CallingConv::ID CallConv = CLI.CallConv;
++  bool IsVarArg = CLI.IsVarArg;
++  EVT PtrVT = getPointerTy(DAG.getDataLayout());
++  MVT XLenVT = Subtarget.getXLenVT();
++
++  MachineFunction &MF = DAG.getMachineFunction();
++
++  // Analyze the operands of the call, assigning locations to each operand.
++  SmallVector<CCValAssign, 16> ArgLocs;
++  CCState ArgCCInfo(CallConv, IsVarArg, MF, ArgLocs, *DAG.getContext());
++
++  analyzeOutputArgs(MF, ArgCCInfo, Outs, /*IsRet=*/false, &CLI, CC_sim);
++
++  if (CLI.CB && CLI.CB->isMustTailCall())
++    report_fatal_error("failed to perform tail call elimination on a call "
++                       "site marked musttail");
++
++  // Get a count of how many bytes are to be pushed on the stack.
++  unsigned NumBytes = ArgCCInfo.getNextStackOffset();
++
++  // Create local copies for byval args
++  SmallVector<SDValue, 8> ByValArgs;
++  for (unsigned i = 0, e = Outs.size(); i != e; ++i) {
++    ISD::ArgFlagsTy Flags = Outs[i].Flags;
++    if (!Flags.isByVal())
++      continue;
++
++    SDValue Arg = OutVals[i];
++    unsigned Size = Flags.getByValSize();
++    Align Alignment = Flags.getNonZeroByValAlign();
++
++    int FI =
++        MF.getFrameInfo().CreateStackObject(Size, Alignment, /*isSS=*/false);
++    SDValue FIPtr = DAG.getFrameIndex(FI, getPointerTy(DAG.getDataLayout()));
++    SDValue SizeNode = DAG.getConstant(Size, DL, XLenVT);
++
++    Chain = DAG.getMemcpy(Chain, DL, FIPtr, Arg, SizeNode, Alignment,
++                          /*IsVolatile=*/false,
++                          /*AlwaysInline=*/false, IsTailCall,
++                          MachinePointerInfo(), MachinePointerInfo());
++    ByValArgs.push_back(FIPtr);
++  }
++
++  if (!IsTailCall)
++    Chain = DAG.getCALLSEQ_START(Chain, NumBytes, 0, CLI.DL);
++
++  // Copy argument values to their designated locations.
++  SmallVector<std::pair<Register, SDValue>, 8> RegsToPass;
++  SmallVector<SDValue, 8> MemOpChains;
++  SDValue StackPtr;
++  for (unsigned i = 0, j = 0, e = ArgLocs.size(); i != e; ++i) {
++    CCValAssign &VA = ArgLocs[i];
++    SDValue ArgValue = OutVals[i];
++    ISD::ArgFlagsTy Flags = Outs[i].Flags;
++
++    // IsF64OnRV32DSoftABI && VA.isMemLoc() is handled below in the same way
++    // as any other MemLoc.
++
++    // Promote the value if needed.
++    // For now, only handle fully promoted and indirect arguments.
++    if (VA.getLocInfo() == CCValAssign::Indirect) {
++      // Store the argument in a stack slot and pass its address.
++      Align StackAlign =
++          std::max(getPrefTypeAlign(Outs[i].ArgVT, DAG),
++                   getPrefTypeAlign(ArgValue.getValueType(), DAG));
++      TypeSize StoredSize = ArgValue.getValueType().getStoreSize();
++      // If the original argument was split (e.g. i128), we need
++      // to store the required parts of it here (and pass just one address).
++      // Vectors may be partly split to registers and partly to the stack, in
++      // which case the base address is partly offset and subsequent stores are
++      // relative to that.
++      unsigned ArgIndex = Outs[i].OrigArgIndex;
++      unsigned ArgPartOffset = Outs[i].PartOffset;
++      assert(VA.getValVT().isVector() || ArgPartOffset == 0);
++      // Calculate the total size to store. We don't have access to what we're
++      // actually storing other than performing the loop and collecting the
++      // info.
++      SmallVector<std::pair<SDValue, SDValue>> Parts;
++      while (i + 1 != e && Outs[i + 1].OrigArgIndex == ArgIndex) {
++        SDValue PartValue = OutVals[i + 1];
++        unsigned PartOffset = Outs[i + 1].PartOffset - ArgPartOffset;
++        SDValue Offset = DAG.getIntPtrConstant(PartOffset, DL);
++        EVT PartVT = PartValue.getValueType();
++        if (PartVT.isScalableVector())
++          Offset = DAG.getNode(ISD::VSCALE, DL, XLenVT, Offset);
++        StoredSize += PartVT.getStoreSize();
++        StackAlign = std::max(StackAlign, getPrefTypeAlign(PartVT, DAG));
++        Parts.push_back(std::make_pair(PartValue, Offset));
++        ++i;
++      }
++      SDValue SpillSlot = DAG.CreateStackTemporary(StoredSize, StackAlign);
++      int FI = cast<FrameIndexSDNode>(SpillSlot)->getIndex();
++      MemOpChains.push_back(
++          DAG.getStore(Chain, DL, ArgValue, SpillSlot,
++                       MachinePointerInfo::getFixedStack(MF, FI)));
++      for (const auto &Part : Parts) {
++        SDValue PartValue = Part.first;
++        SDValue PartOffset = Part.second;
++        SDValue Address =
++            DAG.getNode(ISD::ADD, DL, PtrVT, SpillSlot, PartOffset);
++        MemOpChains.push_back(
++            DAG.getStore(Chain, DL, PartValue, Address,
++                         MachinePointerInfo::getFixedStack(MF, FI)));
++      }
++      ArgValue = SpillSlot;
++    } else {
++      ArgValue = convertValVTToLocVT(DAG, ArgValue, VA, DL, Subtarget);
++    }
++
++    // Use local copy if it is a byval arg.
++    if (Flags.isByVal())
++      ArgValue = ByValArgs[j++];
++
++    if (VA.isRegLoc()) {
++      // Queue up the argument copies and emit them at the end.
++      RegsToPass.push_back(std::make_pair(VA.getLocReg(), ArgValue));
++    } else {
++      assert(VA.isMemLoc() && "Argument not register or memory");
++      assert(!IsTailCall && "Tail call not allowed if stack is used "
++                            "for passing parameters");
++
++      // Work out the address of the stack slot.
++      if (!StackPtr.getNode())
++        StackPtr = DAG.getCopyFromReg(Chain, DL, sim::X2, PtrVT);
++      SDValue Address =
++          DAG.getNode(ISD::ADD, DL, PtrVT, StackPtr,
++                      DAG.getIntPtrConstant(VA.getLocMemOffset(), DL));
++
++      // Emit the store.
++      MemOpChains.push_back(
++          DAG.getStore(Chain, DL, ArgValue, Address, MachinePointerInfo()));
++    }
++  }
++
++  // Join the stores, which are independent of one another.
++  if (!MemOpChains.empty())
++    Chain = DAG.getNode(ISD::TokenFactor, DL, MVT::Other, MemOpChains);
++
++  SDValue Glue;
++
++  // Build a sequence of copy-to-reg nodes, chained and glued together.
++  for (auto &Reg : RegsToPass) {
++    Chain = DAG.getCopyToReg(Chain, DL, Reg.first, Reg.second, Glue);
++    Glue = Chain.getValue(1);
++  }
++
++  // If the callee is a GlobalAddress/ExternalSymbol node, turn it into a
++  // TargetGlobalAddress/TargetExternalSymbol node so that legalize won't
++  // split it and then direct call can be matched by PseudoCALL.
++  if (GlobalAddressSDNode *S = dyn_cast<GlobalAddressSDNode>(Callee)) {
++    const GlobalValue *GV = S->getGlobal();
++
++    unsigned OpFlags = simII::MO_CALL;
++    if (!getTargetMachine().shouldAssumeDSOLocal(*GV->getParent(), GV))
++      OpFlags = simII::MO_PLT;
++
++    Callee = DAG.getTargetGlobalAddress(GV, DL, PtrVT, 0, OpFlags);
++  } else if (ExternalSymbolSDNode *S = dyn_cast<ExternalSymbolSDNode>(Callee)) {
++    unsigned OpFlags = simII::MO_CALL;
++
++    if (!getTargetMachine().shouldAssumeDSOLocal(*MF.getFunction().getParent(),
++                                                 nullptr))
++      OpFlags = simII::MO_PLT;
++
++    Callee = DAG.getTargetExternalSymbol(S->getSymbol(), PtrVT, OpFlags);
++  }
++
++  // The first call operand is the chain and the second is the target address.
++  SmallVector<SDValue, 8> Ops;
++  Ops.push_back(Chain);
++  Ops.push_back(Callee);
++
++  // Add argument registers to the end of the list so that they are
++  // known live into the call.
++  for (auto &Reg : RegsToPass)
++    Ops.push_back(DAG.getRegister(Reg.first, Reg.second.getValueType()));
++
++  if (!IsTailCall) {
++    // Add a register mask operand representing the call-preserved registers.
++    const TargetRegisterInfo *TRI = Subtarget.getRegisterInfo();
++    const uint32_t *Mask = TRI->getCallPreservedMask(MF, CallConv);
++    assert(Mask && "Missing call preserved mask for calling convention");
++    Ops.push_back(DAG.getRegisterMask(Mask));
++  }
++
++  // Glue the call to the argument copies, if any.
++  if (Glue.getNode())
++    Ops.push_back(Glue);
++
++  // Emit the call.
++  SDVTList NodeTys = DAG.getVTList(MVT::Other, MVT::Glue);
++
++  Chain = DAG.getNode(simISD::CALL, DL, NodeTys, Ops);
++  DAG.addNoMergeSiteInfo(Chain.getNode(), CLI.NoMerge);
++  Glue = Chain.getValue(1);
++
++  // Mark the end of the call, which is glued to the call itself.
++  Chain = DAG.getCALLSEQ_END(Chain, DAG.getConstant(NumBytes, DL, PtrVT, true),
++                             DAG.getConstant(0, DL, PtrVT, true), Glue, DL);
++  Glue = Chain.getValue(1);
++
++  // Assign locations to each value returned by this call.
++  SmallVector<CCValAssign, 16> RVLocs;
++  CCState RetCCInfo(CallConv, IsVarArg, MF, RVLocs, *DAG.getContext());
++  analyzeInputArgs(MF, RetCCInfo, Ins, /*IsRet=*/true, CC_sim);
++
++  // Copy all of the result registers out of their specified physreg.
++  for (auto &VA : RVLocs) {
++    // Copy the value out
++    SDValue RetValue =
++        DAG.getCopyFromReg(Chain, DL, VA.getLocReg(), VA.getLocVT(), Glue);
++    // Glue the RetValue to the end of the call sequence
++    Chain = RetValue.getValue(1);
++    Glue = RetValue.getValue(2);
++
++    RetValue = convertLocVTToValVT(DAG, RetValue, VA, DL, Subtarget);
++
++    InVals.push_back(RetValue);
++  }
++
++  return Chain;
++}
++
++//===----------------------------------------------------------------------===//
++//             Formal Arguments Calling Convention Implementation
++//===----------------------------------------------------------------------===//
++
++namespace {
++
++struct ArgDataPair {
++  SDValue SDV;
++  ISD::ArgFlagsTy Flags;
++};
++
++} // end anonymous namespace
++
++// TODO: rewrite
++static SDValue unpackFromRegLoc(SelectionDAG &DAG, SDValue Chain,
++                                const CCValAssign &VA, const SDLoc &DL,
++                                const simTargetLowering &TLI) {
++  MachineFunction &MF = DAG.getMachineFunction();
++  MachineRegisterInfo &RegInfo = MF.getRegInfo();
++  EVT LocVT = VA.getLocVT();
++  SDValue Val;
++  const TargetRegisterClass *RC = TLI.getRegClassFor(LocVT.getSimpleVT());
++  Register VReg = RegInfo.createVirtualRegister(RC);
++  RegInfo.addLiveIn(VA.getLocReg(), VReg);
++  Val = DAG.getCopyFromReg(Chain, DL, VReg, LocVT);
++
++  if (VA.getLocInfo() == CCValAssign::Indirect)
++    return Val;
++
++  return convertLocVTToValVT(DAG, Val, VA, DL, TLI.getSubtarget());
++}
++
++// The caller is responsible for loading the full value if the argument is
++// passed with CCValAssign::Indirect.
++// TODO: rewrite
++static SDValue unpackFromMemLoc(SelectionDAG &DAG, SDValue Chain,
++                                const CCValAssign &VA, const SDLoc &DL) {
++  MachineFunction &MF = DAG.getMachineFunction();
++  MachineFrameInfo &MFI = MF.getFrameInfo();
++  EVT LocVT = VA.getLocVT();
++  EVT ValVT = VA.getValVT();
++  EVT PtrVT = MVT::getIntegerVT(DAG.getDataLayout().getPointerSizeInBits(0));
++  int FI = MFI.CreateFixedObject(ValVT.getStoreSize(), VA.getLocMemOffset(),
++                                 /*IsImmutable=*/true);
++  SDValue FIN = DAG.getFrameIndex(FI, PtrVT);
++  SDValue Val;
++
++  ISD::LoadExtType ExtType;
++  switch (VA.getLocInfo()) {
++  default:
++    llvm_unreachable("Unexpected CCValAssign::LocInfo");
++  case CCValAssign::Full:
++  case CCValAssign::Indirect:
++  case CCValAssign::BCvt:
++    ExtType = ISD::NON_EXTLOAD;
++    break;
++  }
++  Val = DAG.getExtLoad(
++      ExtType, DL, LocVT, Chain, FIN,
++      MachinePointerInfo::getFixedStack(DAG.getMachineFunction(), FI), ValVT);
++  return Val;
++}
++
++/// sim formal arguments implementation
++// TODO: rewrite
++SDValue simTargetLowering::LowerFormalArguments(
++    SDValue Chain, CallingConv::ID CallConv, bool IsVarArg,
++    const SmallVectorImpl<ISD::InputArg> &Ins, const SDLoc &DL,
++    SelectionDAG &DAG, SmallVectorImpl<SDValue> &InVals) const {
++  MachineFunction &MF = DAG.getMachineFunction();
++
++  switch (CallConv) {
++  default:
++    report_fatal_error("Unsupported calling convention");
++  case CallingConv::C:
++  case CallingConv::Fast:
++    break;
++  case CallingConv::GHC:
++    report_fatal_error("GHC calling convention requires the F and D "
++                       "instruction set extensions");
++  }
++
++  const Function &Func = MF.getFunction();
++  if (Func.hasFnAttribute("interrupt")) {
++    if (!Func.arg_empty())
++      report_fatal_error(
++          "Functions with the interrupt attribute cannot have arguments!");
++
++    StringRef Kind =
++        MF.getFunction().getFnAttribute("interrupt").getValueAsString();
++
++    if (!(Kind == "user" || Kind == "supervisor" || Kind == "machine"))
++      report_fatal_error(
++          "Function interrupt attribute argument not supported!");
++  }
++
++  EVT PtrVT = getPointerTy(DAG.getDataLayout());
++  MVT XLenVT = Subtarget.getXLenVT();
++  unsigned XLenInBytes = Subtarget.getXLen() / 8;
++  // Used with vargs to acumulate store chains.
++  std::vector<SDValue> OutChains;
++
++  // Assign locations to all of the incoming arguments.
++  SmallVector<CCValAssign, 16> ArgLocs;
++  CCState CCInfo(CallConv, IsVarArg, MF, ArgLocs, *DAG.getContext());
++
++  analyzeInputArgs(MF, CCInfo, Ins, /*IsRet=*/false, CC_sim);
++
++  for (unsigned i = 0, e = ArgLocs.size(); i != e; ++i) {
++    CCValAssign &VA = ArgLocs[i];
++    SDValue ArgValue;
++    if (VA.isRegLoc())
++      ArgValue = unpackFromRegLoc(DAG, Chain, VA, DL, *this);
++    else
++      ArgValue = unpackFromMemLoc(DAG, Chain, VA, DL);
++
++    if (VA.getLocInfo() == CCValAssign::Indirect) {
++      // If the original argument was split and passed by reference (e.g. i128
++      // on RV32), we need to load all parts of it here (using the same
++      // address). Vectors may be partly split to registers and partly to the
++      // stack, in which case the base address is partly offset and subsequent
++      // stores are relative to that.
++      InVals.push_back(DAG.getLoad(VA.getValVT(), DL, Chain, ArgValue,
++                                   MachinePointerInfo()));
++      unsigned ArgIndex = Ins[i].OrigArgIndex;
++      unsigned ArgPartOffset = Ins[i].PartOffset;
++      assert(VA.getValVT().isVector() || ArgPartOffset == 0);
++      while (i + 1 != e && Ins[i + 1].OrigArgIndex == ArgIndex) {
++        CCValAssign &PartVA = ArgLocs[i + 1];
++        unsigned PartOffset = Ins[i + 1].PartOffset - ArgPartOffset;
++        SDValue Offset = DAG.getIntPtrConstant(PartOffset, DL);
++        if (PartVA.getValVT().isScalableVector())
++          Offset = DAG.getNode(ISD::VSCALE, DL, XLenVT, Offset);
++        SDValue Address = DAG.getNode(ISD::ADD, DL, PtrVT, ArgValue, Offset);
++        InVals.push_back(DAG.getLoad(PartVA.getValVT(), DL, Chain, Address,
++                                     MachinePointerInfo()));
++        ++i;
++      }
++      continue;
++    }
++    InVals.push_back(ArgValue);
++  }
++
++  if (IsVarArg) {
++    ArrayRef<MCPhysReg> ArgRegs = makeArrayRef(ArgGPRs);
++    unsigned Idx = CCInfo.getFirstUnallocated(ArgRegs);
++    const TargetRegisterClass *RC = &sim::GPRRegClass;
++    MachineFrameInfo &MFI = MF.getFrameInfo();
++    MachineRegisterInfo &RegInfo = MF.getRegInfo();
++    simFunctionInfo *RVFI = MF.getInfo<simFunctionInfo>();
++
++    // Offset of the first variable argument from stack pointer, and size of
++    // the vararg save area. For now, the varargs save area is either zero or
++    // large enough to hold a0-a7.
++    int VaArgOffset, VarArgsSaveSize;
++
++    // If all registers are allocated, then all varargs must be passed on the
++    // stack and we don't need to save any argregs.
++    if (ArgRegs.size() == Idx) {
++      VaArgOffset = CCInfo.getNextStackOffset();
++      VarArgsSaveSize = 0;
++    } else {
++      VarArgsSaveSize = XLenInBytes * (ArgRegs.size() - Idx);
++      VaArgOffset = -VarArgsSaveSize;
++    }
++
++    // Record the frame index of the first variable argument
++    // which is a value necessary to VASTART.
++    int FI = MFI.CreateFixedObject(XLenInBytes, VaArgOffset, true);
++    RVFI->setVarArgsFrameIndex(FI);
++
++    // If saving an odd number of registers then create an extra stack slot to
++    // ensure that the frame pointer is 2*XLEN-aligned, which in turn ensures
++    // offsets to even-numbered registered remain 2*XLEN-aligned.
++    if (Idx % 2) {
++      MFI.CreateFixedObject(XLenInBytes, VaArgOffset - (int)XLenInBytes, true);
++      VarArgsSaveSize += XLenInBytes;
++    }
++
++    // Copy the integer registers that may have been used for passing varargs
++    // to the vararg save area.
++    for (unsigned I = Idx; I < ArgRegs.size();
++         ++I, VaArgOffset += XLenInBytes) {
++      const Register Reg = RegInfo.createVirtualRegister(RC);
++      RegInfo.addLiveIn(ArgRegs[I], Reg);
++      SDValue ArgValue = DAG.getCopyFromReg(Chain, DL, Reg, XLenVT);
++      FI = MFI.CreateFixedObject(XLenInBytes, VaArgOffset, true);
++      SDValue PtrOff = DAG.getFrameIndex(FI, getPointerTy(DAG.getDataLayout()));
++      SDValue Store = DAG.getStore(Chain, DL, ArgValue, PtrOff,
++                                   MachinePointerInfo::getFixedStack(MF, FI));
++      cast<StoreSDNode>(Store.getNode())
++          ->getMemOperand()
++          ->setValue((Value *)nullptr);
++      OutChains.push_back(Store);
++    }
++    RVFI->setVarArgsSaveSize(VarArgsSaveSize);
++  }
++
++  // All stores are grouped in one node to allow the matching between
++  // the size of Ins and InVals. This only happens for vararg functions.
++  if (!OutChains.empty()) {
++    OutChains.push_back(Chain);
++    Chain = DAG.getNode(ISD::TokenFactor, DL, MVT::Other, OutChains);
++  }
++
++  return Chain;
++}
++
++//===----------------------------------------------------------------------===//
++//               Return Value Calling Convention Implementation
++//===----------------------------------------------------------------------===//
++
++bool simTargetLowering::CanLowerReturn(
++    CallingConv::ID CallConv, MachineFunction &MF, bool IsVarArg,
++    const SmallVectorImpl<ISD::OutputArg> &Outs, LLVMContext &Context) const {
++  SmallVector<CCValAssign, 16> RVLocs;
++  CCState CCInfo(CallConv, IsVarArg, MF, RVLocs, Context);
++
++  Optional<unsigned> FirstMaskArgument;
++
++  for (unsigned i = 0, e = Outs.size(); i != e; ++i) {
++    MVT VT = Outs[i].VT;
++    ISD::ArgFlagsTy ArgFlags = Outs[i].Flags;
++    simABI::ABI ABI = MF.getSubtarget<simSubtarget>().getTargetABI();
++    if (CC_sim(MF.getDataLayout(), ABI, i, VT, VT, CCValAssign::Full, ArgFlags,
++               CCInfo, /*IsFixed=*/true, /*IsRet=*/true, nullptr, *this,
++               FirstMaskArgument))
++      return false;
++  }
++  return true;
++}
++
++// TODO: rewrite
++SDValue
++simTargetLowering::LowerReturn(SDValue Chain, CallingConv::ID CallConv,
++                               bool IsVarArg,
++                               const SmallVectorImpl<ISD::OutputArg> &Outs,
++                               const SmallVectorImpl<SDValue> &OutVals,
++                               const SDLoc &DL, SelectionDAG &DAG) const {
++  const MachineFunction &MF = DAG.getMachineFunction();
++  const simSubtarget &STI = MF.getSubtarget<simSubtarget>();
++
++  // Stores the assignment of the return value to a location.
++  SmallVector<CCValAssign, 16> RVLocs;
++
++  // Info about the registers and stack slot.
++  CCState CCInfo(CallConv, IsVarArg, DAG.getMachineFunction(), RVLocs,
++                 *DAG.getContext());
++
++  analyzeOutputArgs(DAG.getMachineFunction(), CCInfo, Outs, /*IsRet=*/true,
++                    nullptr, CC_sim);
++
++  if (CallConv == CallingConv::GHC && !RVLocs.empty())
++    report_fatal_error("GHC functions return void only");
++
++  SDValue Glue;
++  SmallVector<SDValue, 4> RetOps(1, Chain);
++
++  // Copy the result values into the output registers.
++  for (unsigned i = 0, e = RVLocs.size(); i < e; ++i) {
++    SDValue Val = OutVals[i];
++    CCValAssign &VA = RVLocs[i];
++    assert(VA.isRegLoc() && "Can only return in registers!");
++
++    {
++      // Handle a 'normal' return.
++      Val = convertValVTToLocVT(DAG, Val, VA, DL, Subtarget);
++      Chain = DAG.getCopyToReg(Chain, DL, VA.getLocReg(), Val, Glue);
++
++      // Guarantee that all emitted copies are stuck together.
++      Glue = Chain.getValue(1);
++      RetOps.push_back(DAG.getRegister(VA.getLocReg(), VA.getLocVT()));
++    }
++  }
++
++  RetOps[0] = Chain; // Update chain.
++
++  // Add the glue node if we have it.
++  if (Glue.getNode()) {
++    RetOps.push_back(Glue);
++  }
++
++  unsigned RetOpc = simISD::RET_FLAG;
++  // Interrupt service routines use different return instructions.
++  const Function &Func = DAG.getMachineFunction().getFunction();
++  if (Func.hasFnAttribute("interrupt")) {
++    if (!Func.getReturnType()->isVoidTy())
++      report_fatal_error(
++          "Functions with the interrupt attribute must have void return type!");
++
++    MachineFunction &MF = DAG.getMachineFunction();
++    StringRef Kind =
++        MF.getFunction().getFnAttribute("interrupt").getValueAsString();
++
++    if (Kind == "user")
++      RetOpc = simISD::URET_FLAG;
++    else if (Kind == "supervisor")
++      RetOpc = simISD::SRET_FLAG;
++    else
++      RetOpc = simISD::MRET_FLAG;
++  }
++
++  return DAG.getNode(RetOpc, DL, MVT::Other, RetOps);
++}
++
++//===----------------------------------------------------------------------===//
++// Target Optimization Hooks
++//===----------------------------------------------------------------------===//
++
++SDValue simTargetLowering::PerformDAGCombine(SDNode *N,
++                                             DAGCombinerInfo &DCI) const {
++  // TODO: advanced opts
++  return {};
++}
++
++//===----------------------------------------------------------------------===//
++//  Addressing mode description hooks
++//===----------------------------------------------------------------------===//
++
++/// Return true if the addressing mode represented by AM is legal for this
++/// target, for a load/store of the specified type.
++// TODO: verify
++bool simTargetLowering::isLegalAddressingMode(const DataLayout &DL,
++                                              const AddrMode &AM, Type *Ty,
++                                              unsigned AS,
++                                              Instruction *I) const {
++  // No global is ever allowed as a base.
++  if (AM.BaseGV)
++    return false;
++
++  if (!isInt<16>(AM.BaseOffs))
++    return false;
++
++  switch (AM.Scale) {
++  case 0: // "r+i" or just "i", depending on HasBaseReg.
++    break;
++  case 1:
++    if (!AM.HasBaseReg) // allow "r+i".
++      break;
++    return false; // disallow "r+r" or "r+r+i".
++  default:
++    return false;
++  }
++
++  return true;
++}
++
++// Don't emit tail calls for the time being.
++bool simTargetLowering::mayBeEmittedAsTailCall(const CallInst *CI) const {
++  return false;
++}
++
++static void translateSetCCForBranch(const SDLoc &DL, SDValue &LHS, SDValue &RHS,
++                                    ISD::CondCode &CC, SelectionDAG &DAG) {
++  switch (CC) {
++  default:
++    break;
++  case ISD::SETLT:
++  case ISD::SETGE:
++    CC = ISD::getSetCCSwappedOperands(CC);
++    std::swap(LHS, RHS);
++    break;
++  }
++}
++
++SDValue simTargetLowering::lowerBR_CC(SDValue Op, SelectionDAG &DAG) const {
++  SDValue CC = Op.getOperand(1);
++  SDValue LHS = Op.getOperand(2);
++  SDValue RHS = Op.getOperand(3);
++  SDValue Block = Op->getOperand(4);
++  SDLoc DL(Op);
++
++  assert(LHS.getValueType() == MVT::i32);
++
++  ISD::CondCode CCVal = cast<CondCodeSDNode>(CC)->get();
++  translateSetCCForBranch(DL, LHS, RHS, CCVal, DAG);
++  SDValue TargetCC = DAG.getCondCode(CCVal);
++
++  return DAG.getNode(simISD::BR_CC, DL, Op.getValueType(), Op.getOperand(0),
++                     LHS, RHS, TargetCC, Block);
++}
++
++SDValue simTargetLowering::lowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) const {
++  const simRegisterInfo &RI = *Subtarget.getRegisterInfo();
++  MachineFunction &MF = DAG.getMachineFunction();
++  MachineFrameInfo &MFI = MF.getFrameInfo();
++  MFI.setFrameAddressIsTaken(true);
++  Register FrameReg = RI.getFrameRegister(MF);
++  EVT VT = Op.getValueType();
++  SDLoc DL(Op);
++  SDValue FrameAddr = DAG.getCopyFromReg(DAG.getEntryNode(), DL, FrameReg, VT);
++  // Only for current frame
++  assert(cast<ConstantSDNode>(Op.getOperand(0))->getZExtValue() == 0);
++  return FrameAddr;
++}
++
++SDValue simTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
++  switch (Op->getOpcode()) {
++  case ISD::BR_CC:
++    return lowerBR_CC(Op, DAG);
++  case ISD::FRAMEADDR:
++    return lowerFRAMEADDR(Op, DAG);
++  default:
++    llvm_unreachable("");
++  }
++}
+diff --git a/llvm/lib/Target/sim/simISelLowering.h b/llvm/lib/Target/sim/simISelLowering.h
+new file mode 100644
+index 000000000000..6f484806704f
+--- /dev/null
++++ b/llvm/lib/Target/sim/simISelLowering.h
+@@ -0,0 +1,103 @@
++#ifndef __LLVM_LIB_TARGET_SIM_SIMISELLOWERING_H__
++#define __LLVM_LIB_TARGET_SIM_SIMISELLOWERING_H__
++
++#include "sim.h"
++#include "MCTargetDesc/simInfo.h"
++#include "llvm/CodeGen/CallingConvLower.h"
++#include "llvm/CodeGen/SelectionDAG.h"
++#include "llvm/CodeGen/TargetLowering.h"
++
++namespace llvm {
++
++class simSubtarget;
++class simTargetMachine;
++
++namespace simISD {
++
++enum NodeType : unsigned {
++  // Start the numbering where the builtin ops and target ops leave off.
++  FIRST_NUMBER = ISD::BUILTIN_OP_END,
++  RET_FLAG,
++  URET_FLAG,
++  SRET_FLAG,
++  MRET_FLAG,
++  BR_CC,
++  CALL,
++};
++
++} // namespace simISD
++
++class simTargetLowering : public TargetLowering {
++public:
++  explicit simTargetLowering(const TargetMachine &TM,
++                              const simSubtarget &STI);
++
++  /// Provide custom lowering hooks for some operations.
++  SDValue LowerOperation(SDValue Op, SelectionDAG &DAG) const override;
++
++  /// This method returns the name of a target specific DAG node.
++  const char *getTargetNodeName(unsigned Opcode) const override;
++
++  /// Return true if the addressing mode represented by AM is legal for this
++  /// target, for a load/store of the specified type.
++  bool isLegalAddressingMode(const DataLayout &DL, const AddrMode &AM, Type *Ty,
++                             unsigned AS,
++                             Instruction *I = nullptr) const override;
++
++  simSubtarget const &getSubtarget() const { return Subtarget; }
++
++private:
++  const simSubtarget &Subtarget;
++
++  /// RISCVCCAssignFn - This target-specific function extends the default
++  /// CCValAssign with additional information used to lower RISC-V calling
++  /// conventions.
++  typedef bool simCCAssignFn(const DataLayout &DL, simABI::ABI,
++                               unsigned ValNo, MVT ValVT, MVT LocVT,
++                               CCValAssign::LocInfo LocInfo,
++                               ISD::ArgFlagsTy ArgFlags, CCState &State,
++                               bool IsFixed, bool IsRet, Type *OrigTy,
++                               const simTargetLowering &TLI,
++                               Optional<unsigned> FirstMaskArgument);
++
++  void analyzeInputArgs(MachineFunction &MF, CCState &CCInfo,
++                        const SmallVectorImpl<ISD::InputArg> &Ins, bool IsRet,
++                        simCCAssignFn Fn) const;
++  void analyzeOutputArgs(MachineFunction &MF, CCState &CCInfo,
++                         const SmallVectorImpl<ISD::OutputArg> &Outs,
++                         bool IsRet, CallLoweringInfo *CLI,
++                         simCCAssignFn Fn) const;
++
++  void ReplaceNodeResults(SDNode *N, SmallVectorImpl<SDValue> &Results,
++                          SelectionDAG &DAG) const override;
++
++  SDValue PerformDAGCombine(SDNode *N, DAGCombinerInfo &DCI) const override;
++
++  SDValue LowerFormalArguments(SDValue Chain, CallingConv::ID CallConv,
++                               bool IsVarArg,
++                               const SmallVectorImpl<ISD::InputArg> &Ins,
++                               const SDLoc &DL, SelectionDAG &DAG,
++                               SmallVectorImpl<SDValue> &InVals) const override;
++
++  SDValue LowerCall(TargetLowering::CallLoweringInfo &CLI,
++                    SmallVectorImpl<SDValue> &InVals) const override;
++
++  SDValue LowerReturn(SDValue Chain, CallingConv::ID CallConv, bool IsVarArg,
++                      const SmallVectorImpl<ISD::OutputArg> &Outs,
++                      const SmallVectorImpl<SDValue> &OutVals, const SDLoc &DL,
++                      SelectionDAG &DAG) const override;
++
++  bool CanLowerReturn(CallingConv::ID CallConv, MachineFunction &MF,
++                      bool IsVarArg,
++                      const SmallVectorImpl<ISD::OutputArg> &ArgsFlags,
++                      LLVMContext &Context) const override;
++
++  bool mayBeEmittedAsTailCall(const CallInst *CI) const override;
++
++  SDValue lowerBR_CC(SDValue Op, SelectionDAG &DAG) const;
++  SDValue lowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) const;
++};
++
++} // end namespace llvm
++
++#endif // __LLVM_LIB_TARGET_SIM_SIMISELLOWERING_H__
+diff --git a/llvm/lib/Target/sim/simInstrFormats.td b/llvm/lib/Target/sim/simInstrFormats.td
+new file mode 100644
+index 000000000000..2d98d6c449cc
+--- /dev/null
++++ b/llvm/lib/Target/sim/simInstrFormats.td
+@@ -0,0 +1,218 @@
++//===----------------------------------------------------------------------===//
++//  Describe sim instructions format
++//
++//  CPU INSTRUCTION FORMATS
++//
++//  FF FF FF FF
++//        ^^ ^^ - r3_imm - third reg or imm
++//      ^       - r2     - second reg
++//     ^        - r1     - first reg
++//  ^^          - opcode - operation code
++//
++//===----------------------------------------------------------------------===//
++
++// Generic sim Format
++class InstFormat<bits<5> val> {
++  bits<5> Value = val;
++}
++
++def InstFormatPseudo      : InstFormat<0>;
++def InstFormatR           : InstFormat<1>;
++def InstFormatI           : InstFormat<2>;
++def InstFormatS           : InstFormat<3>;
++def InstFormatB           : InstFormat<4>;
++def InstFormatU           : InstFormat<5>;
++def InstFormatJ           : InstFormat<6>;
++
++// The following opcode names match those given in Table 19.1 in the
++// RISC-V User-level ISA specification ("RISC-V base opcode map").
++class simOpcode<string name, bits<7> val> {
++  string Name = name;
++  bits<7> Value = val;
++}
++
++def OPC_LOAD      : simOpcode<"LOAD",      0b0000011>;
++def OPC_LOAD_FP   : simOpcode<"LOAD_FP",   0b0000111>;
++def OPC_MISC_MEM  : simOpcode<"MISC_MEM",  0b0001111>;
++def OPC_OP_IMM    : simOpcode<"OP_IMM",    0b0010011>;
++def OPC_AUIPC     : simOpcode<"AUIPC",     0b0010111>;
++def OPC_OP_IMM_32 : simOpcode<"OP_IMM_32", 0b0011011>;
++def OPC_STORE     : simOpcode<"STORE",     0b0100011>;
++def OPC_STORE_FP  : simOpcode<"STORE_FP",  0b0100111>;
++def OPC_AMO       : simOpcode<"AMO",       0b0101111>;
++def OPC_OP        : simOpcode<"OP",        0b0110011>;
++def OPC_LUI       : simOpcode<"LUI",       0b0110111>;
++def OPC_OP_32     : simOpcode<"OP_32",     0b0111011>;
++def OPC_MADD      : simOpcode<"MADD",      0b1000011>;
++def OPC_MSUB      : simOpcode<"MSUB",      0b1000111>;
++def OPC_NMSUB     : simOpcode<"NMSUB",     0b1001011>;
++def OPC_NMADD     : simOpcode<"NMADD",     0b1001111>;
++def OPC_OP_FP     : simOpcode<"OP_FP",     0b1010011>;
++def OPC_OP_V      : simOpcode<"OP_V",      0b1010111>;
++def OPC_BRANCH    : simOpcode<"BRANCH",    0b1100011>;
++def OPC_JALR      : simOpcode<"JALR",      0b1100111>;
++def OPC_JAL       : simOpcode<"JAL",       0b1101111>;
++def OPC_SYSTEM    : simOpcode<"SYSTEM",    0b1110011>;
++
++class simInst<dag outs, dag ins, string opcodestr, string argstr,
++             list<dag> pattern, InstFormat format>
++    : Instruction {
++  let Namespace = "sim";
++  let DecoderNamespace = "sim";
++  let Size = 4;
++
++  field bits<32> Inst;
++
++  bits<7> Opcode = 0;
++
++  let Inst{6-0} = Opcode;
++
++  dag OutOperandList = outs;
++  dag InOperandList = ins;
++  let AsmString = opcodestr # "\t" # argstr;
++  let Pattern = pattern;
++}
++
++// Pseudo instructions
++class Pseudo<dag outs, dag ins, list<dag> pattern, string opcodestr = "", string argstr = "">
++    : simInst<outs, ins, opcodestr, argstr, pattern, InstFormatPseudo> {
++  let isPseudo = 1;
++  let isCodeGenOnly = 1;
++}
++
++// Pseudo load instructions.
++class PseudoLoad<string opcodestr, RegisterClass rdty = GPR>
++    : Pseudo<(outs rdty:$rd), (ins bare_symbol:$addr), [], opcodestr, "$rd, $addr"> {
++  let hasSideEffects = 0;
++  let mayLoad = 1;
++  let mayStore = 0;
++  let isCodeGenOnly = 0;
++  let isAsmParserOnly = 1;
++}
++
++// Pseudo store instructions.
++class PseudoStore<string opcodestr, RegisterClass rsty = GPR>
++    : Pseudo<(outs GPR:$tmp), (ins rsty:$rs, bare_symbol:$addr), [], opcodestr, "$rs, $addr, $tmp"> {
++  let hasSideEffects = 0;
++  let mayLoad = 0;
++  let mayStore = 1;
++  let isCodeGenOnly = 0;
++  let isAsmParserOnly = 1;
++}
++
++class simInstR<bits<7> funct7, bits<3> funct3, simOpcode opcode, dag outs,
++              dag ins, string opcodestr, string argstr>
++    : simInst<outs, ins, opcodestr, argstr, [], InstFormatR> {
++  bits<5> rs2;
++  bits<5> rs1;
++  bits<5> rd;
++
++  let Inst{31-25} = funct7;
++  let Inst{24-20} = rs2;
++  let Inst{19-15} = rs1;
++  let Inst{14-12} = funct3;
++  let Inst{11-7} = rd;
++  let Opcode = opcode.Value;
++}
++
++class simInstI<bits<3> funct3, simOpcode opcode, dag outs, dag ins,
++              string opcodestr, string argstr>
++    : simInst<outs, ins, opcodestr, argstr, [], InstFormatI> {
++  bits<12> imm12;
++  bits<5> rs1;
++  bits<5> rd;
++
++  let Inst{31-20} = imm12;
++  let Inst{19-15} = rs1;
++  let Inst{14-12} = funct3;
++  let Inst{11-7} = rd;
++  let Opcode = opcode.Value;
++}
++
++class simInstS<bits<3> funct3, simOpcode opcode, dag outs, dag ins,
++              string opcodestr, string argstr>
++    : simInst<outs, ins, opcodestr, argstr, [], InstFormatS> {
++  bits<12> imm12;
++  bits<5> rs2;
++  bits<5> rs1;
++
++  let Inst{31-25} = imm12{11-5};
++  let Inst{24-20} = rs2;
++  let Inst{19-15} = rs1;
++  let Inst{14-12} = funct3;
++  let Inst{11-7} = imm12{4-0};
++  let Opcode = opcode.Value;
++}
++
++class simInstB<bits<3> funct3, simOpcode opcode, dag outs, dag ins,
++              string opcodestr, string argstr>
++    : simInst<outs, ins, opcodestr, argstr, [], InstFormatB> {
++  bits<12> imm12;
++  bits<5> rs2;
++  bits<5> rs1;
++
++  let Inst{31} = imm12{11};
++  let Inst{30-25} = imm12{9-4};
++  let Inst{24-20} = rs2;
++  let Inst{19-15} = rs1;
++  let Inst{14-12} = funct3;
++  let Inst{11-8} = imm12{3-0};
++  let Inst{7} = imm12{10};
++  let Opcode = opcode.Value;
++}
++
++class simInstU<simOpcode opcode, dag outs, dag ins, string opcodestr,
++              string argstr>
++    : simInst<outs, ins, opcodestr, argstr, [], InstFormatU> {
++  bits<20> imm20;
++  bits<5> rd;
++
++  let Inst{31-12} = imm20;
++  let Inst{11-7} = rd;
++  let Opcode = opcode.Value;
++}
++
++class simInstJ<simOpcode opcode, dag outs, dag ins, string opcodestr,
++              string argstr>
++    : simInst<outs, ins, opcodestr, argstr, [], InstFormatJ> {
++  bits<20> imm20;
++  bits<5> rd;
++
++  let Inst{31} = imm20{19};
++  let Inst{30-21} = imm20{9-0};
++  let Inst{20} = imm20{10};
++  let Inst{19-12} = imm20{18-11};
++  let Inst{11-7} = rd;
++  let Opcode = opcode.Value;
++}
++
++class simInstIShift<bits<5> imm11_7, bits<3> funct3, simOpcode opcode,
++                   dag outs, dag ins, string opcodestr, string argstr>
++    : simInst<outs, ins, opcodestr, argstr, [], InstFormatI> {
++  bits<6> shamt;
++  bits<5> rs1;
++  bits<5> rd;
++
++  let Inst{31-27} = imm11_7;
++  let Inst{26} = 0;
++  let Inst{25-20} = shamt;
++  let Inst{19-15} = rs1;
++  let Inst{14-12} = funct3;
++  let Inst{11-7} = rd;
++  let Opcode = opcode.Value;
++}
++
++class simInstIShiftW<bits<7> imm11_5, bits<3> funct3, simOpcode opcode,
++                    dag outs, dag ins, string opcodestr, string argstr>
++    : simInst<outs, ins, opcodestr, argstr, [], InstFormatI> {
++  bits<5> shamt;
++  bits<5> rs1;
++  bits<5> rd;
++
++  let Inst{31-25} = imm11_5;
++  let Inst{24-20} = shamt;
++  let Inst{19-15} = rs1;
++  let Inst{14-12} = funct3;
++  let Inst{11-7} = rd;
++  let Opcode = opcode.Value;
++}
+\ No newline at end of file
+diff --git a/llvm/lib/Target/sim/simInstrInfo.cpp b/llvm/lib/Target/sim/simInstrInfo.cpp
+new file mode 100644
+index 000000000000..c6a73827875d
+--- /dev/null
++++ b/llvm/lib/Target/sim/simInstrInfo.cpp
+@@ -0,0 +1,338 @@
++#include "simInstrInfo.h"
++#include "sim.h"
++//#include "simMachineFunctionInfo.h"
++#include "MCTargetDesc/simInfo.h"
++#include "simSubtarget.h"
++#include "llvm/CodeGen/MachineFrameInfo.h"
++#include "llvm/CodeGen/MachineInstrBuilder.h"
++#include "llvm/CodeGen/MachineMemOperand.h"
++#include "llvm/MC/TargetRegistry.h"
++#include "llvm/Support/Debug.h"
++#include "llvm/Support/ErrorHandling.h"
++
++using namespace llvm;
++
++#define GET_INSTRINFO_CTOR_DTOR
++#include "simGenInstrInfo.inc"
++
++#define DEBUG_TYPE "sim-inst-info"
++
++void simInstrInfo::anchor() {}
++
++simInstrInfo::simInstrInfo(const simSubtarget &STI)
++    : simGenInstrInfo(sim::ADJCALLSTACKDOWN, sim::ADJCALLSTACKUP), STI(STI) {
++}
++
++unsigned simInstrInfo::isLoadFromStackSlot(const MachineInstr &MI,
++                                            int &FrameIndex) const {
++  switch (MI.getOpcode()) {
++  default:
++    return 0;
++    // TODO: load opcodes
++    break;
++  }
++
++  if (MI.getOperand(1).isFI() && MI.getOperand(2).isImm() &&
++      MI.getOperand(2).getImm() == 0) {
++    FrameIndex = MI.getOperand(1).getIndex();
++    return MI.getOperand(0).getReg();
++  }
++  return 0;
++}
++
++unsigned simInstrInfo::isStoreToStackSlot(const MachineInstr &MI,
++                                           int &FrameIndex) const {
++  llvm_unreachable("");
++  return 0;
++}
++
++static simCC::CondCode getCondFromBranchOpc(unsigned Opc) {
++  switch (Opc) {
++  default:
++    return simCC::COND_INVALID;
++  case sim::BEQ:
++    return simCC::COND_EQ;
++  case sim::BNE:
++    return simCC::COND_NE;
++  case sim::BLT:
++    return simCC::COND_LT;
++  case sim::BLTU:
++    return simCC::COND_LTU;
++  case sim::BGE:
++    return simCC::COND_GE;
++  case sim::BGEU:
++    return simCC::COND_GEU;
++  }
++}
++
++static void parseCondBranch(MachineInstr &LastInst, MachineBasicBlock *&Target,
++                            SmallVectorImpl<MachineOperand> &Cond) {
++  // Block ends with fall-through condbranch.
++  assert(LastInst.getDesc().isConditionalBranch() &&
++         "Unknown conditional branch");
++  Target = LastInst.getOperand(2).getMBB();
++  unsigned CC = getCondFromBranchOpc(LastInst.getOpcode());
++  Cond.push_back(MachineOperand::CreateImm(CC));
++  Cond.push_back(LastInst.getOperand(0));
++  Cond.push_back(LastInst.getOperand(1));
++}
++
++const MCInstrDesc &simInstrInfo::getBrCond(simCC::CondCode CC) const {
++  switch (CC) {
++  default:
++    llvm_unreachable("Unknown condition code!");
++  case simCC::COND_EQ:
++    return get(sim::BEQ);
++  case simCC::COND_NE:
++    return get(sim::BNE);
++  case simCC::COND_LT:
++    return get(sim::BLT);
++  case simCC::COND_GE:
++    return get(sim::BGE);
++  case simCC::COND_LTU:
++    return get(sim::BLTU);
++  case simCC::COND_GEU:
++    return get(sim::BGEU);
++  }
++}
++
++simCC::CondCode simCC::getOppositeBranchCondition(simCC::CondCode CC) {
++  switch (CC) {
++  default:
++    llvm_unreachable("Unrecognized conditional branch");
++  case simCC::COND_EQ:
++    return simCC::COND_NE;
++  case simCC::COND_NE:
++    return simCC::COND_EQ;
++  case simCC::COND_LT:
++    return simCC::COND_GE;
++  case simCC::COND_GE:
++    return simCC::COND_LT;
++  case simCC::COND_LTU:
++    return simCC::COND_GEU;
++  case simCC::COND_GEU:
++    return simCC::COND_LTU;
++  }
++}
++
++// TODO: inherited from riscv
++bool simInstrInfo::analyzeBranch(MachineBasicBlock &MBB,
++                                  MachineBasicBlock *&TBB,
++                                  MachineBasicBlock *&FBB,
++                                  SmallVectorImpl<MachineOperand> &Cond,
++                                  bool AllowModify) const {
++  TBB = FBB = nullptr;
++  Cond.clear();
++
++  // If the block has no terminators, it just falls into the block after it.
++  MachineBasicBlock::iterator I = MBB.getLastNonDebugInstr();
++  if (I == MBB.end() || !isUnpredicatedTerminator(*I))
++    return false;
++
++  // Count the number of terminators and find the first unconditional or
++  // indirect branch.
++  MachineBasicBlock::iterator FirstUncondOrIndirectBr = MBB.end();
++  int NumTerminators = 0;
++  for (auto J = I.getReverse(); J != MBB.rend() && isUnpredicatedTerminator(*J);
++       J++) {
++    NumTerminators++;
++    if (J->getDesc().isUnconditionalBranch() ||
++        J->getDesc().isIndirectBranch()) {
++      FirstUncondOrIndirectBr = J.getReverse();
++    }
++  }
++
++  // If AllowModify is true, we can erase any terminators after
++  // FirstUncondOrIndirectBR.
++  if (AllowModify && FirstUncondOrIndirectBr != MBB.end()) {
++    while (std::next(FirstUncondOrIndirectBr) != MBB.end()) {
++      std::next(FirstUncondOrIndirectBr)->eraseFromParent();
++      NumTerminators--;
++    }
++    I = FirstUncondOrIndirectBr;
++  }
++
++  // We can't handle blocks that end in an indirect branch.
++  if (I->getDesc().isIndirectBranch())
++    return true;
++
++  // We can't handle blocks with more than 2 terminators.
++  if (NumTerminators > 2)
++    return true;
++
++  // Handle a single unconditional branch.
++  if (NumTerminators == 1 && I->getDesc().isUnconditionalBranch()) {
++    TBB = getBranchDestBlock(*I);
++    return false;
++  }
++
++  // Handle a single conditional branch.
++  if (NumTerminators == 1 && I->getDesc().isConditionalBranch()) {
++    parseCondBranch(*I, TBB, Cond);
++    return false;
++  }
++
++  // Handle a conditional branch followed by an unconditional branch.
++  if (NumTerminators == 2 && std::prev(I)->getDesc().isConditionalBranch() &&
++      I->getDesc().isUnconditionalBranch()) {
++    parseCondBranch(*std::prev(I), TBB, Cond);
++    FBB = getBranchDestBlock(*I);
++    return false;
++  }
++
++  // Otherwise, we can't handle this.
++  return true;
++}
++
++// TODO: explore
++unsigned simInstrInfo::removeBranch(MachineBasicBlock &MBB,
++                                     int *BytesRemoved) const {
++  if (BytesRemoved)
++    *BytesRemoved = 0;
++  MachineBasicBlock::iterator I = MBB.getLastNonDebugInstr();
++  if (I == MBB.end())
++    return 0;
++
++  if (!I->getDesc().isUnconditionalBranch() &&
++      !I->getDesc().isConditionalBranch())
++    return 0;
++
++  // Remove the branch.
++  if (BytesRemoved)
++    *BytesRemoved += getInstSizeInBytes(*I);
++  I->eraseFromParent();
++
++  I = MBB.end();
++
++  if (I == MBB.begin())
++    return 1;
++  --I;
++  if (!I->getDesc().isConditionalBranch())
++    return 1;
++
++  // Remove the branch.
++  if (BytesRemoved)
++    *BytesRemoved += getInstSizeInBytes(*I);
++  I->eraseFromParent();
++  return 2;
++}
++
++MachineBasicBlock *
++simInstrInfo::getBranchDestBlock(const MachineInstr &MI) const {
++  assert(MI.getDesc().isBranch() && "Unexpected opcode!");
++  return MI.getOperand(MI.getNumExplicitOperands() - 1).getMBB();
++}
++
++void simInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
++                                MachineBasicBlock::iterator MBBI,
++                                const DebugLoc &DL, MCRegister DstReg,
++                                MCRegister SrcReg, bool KillSrc) const {
++  if (sim::GPRRegClass.contains(DstReg, SrcReg)) {
++    BuildMI(MBB, MBBI, DL, get(sim::ADDI), DstReg)
++        .addReg(SrcReg, getKillRegState(KillSrc))
++        .addImm(0);
++    return;
++  }
++  llvm_unreachable("can't copyPhysReg");
++}
++
++void simInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
++                                        MachineBasicBlock::iterator I,
++                                        Register SrcReg, bool IsKill, int FI,
++                                        const TargetRegisterClass *RC,
++                                        const TargetRegisterInfo *TRI) const {
++  DebugLoc DL;
++  if (I != MBB.end())
++    DL = I->getDebugLoc();
++
++  MachineFunction *MF = MBB.getParent();
++  MachineFrameInfo &MFI = MF->getFrameInfo();
++
++  MachineMemOperand *MMO = MF->getMachineMemOperand(
++      MachinePointerInfo::getFixedStack(*MF, FI), MachineMemOperand::MOStore,
++      MFI.getObjectSize(FI), MFI.getObjectAlign(FI));
++
++  BuildMI(MBB, I, DL, get(sim::SW))
++      .addReg(SrcReg, getKillRegState(IsKill))
++      .addFrameIndex(FI)
++      .addImm(0)
++      .addMemOperand(MMO);
++}
++
++void simInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
++                                         MachineBasicBlock::iterator I,
++                                         Register DstReg, int FI,
++                                         const TargetRegisterClass *RC,
++                                         const TargetRegisterInfo *TRI) const {
++  DebugLoc DL;
++  if (I != MBB.end())
++    DL = I->getDebugLoc();
++
++  MachineFunction *MF = MBB.getParent();
++  MachineFrameInfo &MFI = MF->getFrameInfo();
++
++  MachineMemOperand *MMO = MF->getMachineMemOperand(
++      MachinePointerInfo::getFixedStack(*MF, FI), MachineMemOperand::MOLoad,
++      MFI.getObjectSize(FI), MFI.getObjectAlign(FI));
++
++  BuildMI(MBB, I, DL, get(sim::LW), DstReg)
++      .addFrameIndex(FI)
++      .addImm(0)
++      .addMemOperand(MMO);
++}
++
++bool simInstrInfo::reverseBranchCondition(
++    SmallVectorImpl<MachineOperand> &Cond) const {
++  assert((Cond.size() == 3) && "Invalid branch condition!");
++  auto CC = static_cast<simCC::CondCode>(Cond[0].getImm());
++  Cond[0].setImm(getOppositeBranchCondition(CC));
++  return false;
++}
++
++// TODO: explore
++unsigned simInstrInfo::insertBranch(
++    MachineBasicBlock &MBB, MachineBasicBlock *TBB, MachineBasicBlock *FBB,
++    ArrayRef<MachineOperand> Cond, const DebugLoc &DL, int *BytesAdded) const {
++  if (BytesAdded)
++    *BytesAdded = 0;
++
++  // Shouldn't be a fall through.
++  assert(TBB && "insertBranch must not be told to insert a fallthrough");
++  assert((Cond.size() == 3 || Cond.size() == 0) &&
++         "Wrong number of components");
++
++  // Unconditional branch.
++  if (Cond.empty()) {
++    MachineInstr &MI = *BuildMI(&MBB, DL, get(sim::PseudoBR)).addMBB(TBB);
++    if (BytesAdded)
++      *BytesAdded += getInstSizeInBytes(MI);
++    return 1;
++  }
++
++  // Either a one or two-way conditional branch.
++  auto CC = static_cast<simCC::CondCode>(Cond[0].getImm());
++  MachineInstr &CondMI =
++      *BuildMI(&MBB, DL, getBrCond(CC)).add(Cond[1]).add(Cond[2]).addMBB(TBB);
++  if (BytesAdded)
++    *BytesAdded += getInstSizeInBytes(CondMI);
++
++  // One-way conditional branch.
++  if (!FBB)
++    return 1;
++
++  // Two-way conditional branch.
++  MachineInstr &MI = *BuildMI(&MBB, DL, get(sim::PseudoBR)).addMBB(FBB);
++  if (BytesAdded)
++    *BytesAdded += getInstSizeInBytes(MI);
++  return 2;
++}
++
++unsigned simInstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
++  llvm_unreachable("");
++}
++
++bool simInstrInfo::getBaseAndOffsetPosition(const MachineInstr &MI,
++                                             unsigned &BasePos,
++                                             unsigned &OffsetPos) const {
++  llvm_unreachable("");
++}
+diff --git a/llvm/lib/Target/sim/simInstrInfo.h b/llvm/lib/Target/sim/simInstrInfo.h
+new file mode 100644
+index 000000000000..dbc61ddc9385
+--- /dev/null
++++ b/llvm/lib/Target/sim/simInstrInfo.h
+@@ -0,0 +1,71 @@
++#ifndef __LLVM_LIB_TARGET_SIM_SIMINSTRINFO_H__
++#define __LLVM_LIB_TARGET_SIM_SIMINSTRINFO_H__
++
++#include "MCTargetDesc/simInfo.h"
++#include "simRegisterInfo.h"
++#include "llvm/CodeGen/TargetInstrInfo.h"
++
++#define GET_INSTRINFO_HEADER
++#include "simGenInstrInfo.inc"
++
++namespace llvm {
++
++class simSubtarget;
++
++class simInstrInfo : public simGenInstrInfo {
++  const simSubtarget &STI;
++  virtual void anchor();
++
++  const MCInstrDesc &getBrCond(simCC::CondCode CC) const;
++
++public:
++  simInstrInfo(const simSubtarget &);
++
++  unsigned isLoadFromStackSlot(const MachineInstr &MI,
++                               int &FrameIndex) const override;
++  unsigned isStoreToStackSlot(const MachineInstr &MI,
++                              int &FrameIndex) const override;
++
++  unsigned getInstSizeInBytes(const MachineInstr &MI) const override;
++
++  bool analyzeBranch(MachineBasicBlock &MBB, MachineBasicBlock *&TBB,
++                     MachineBasicBlock *&FBB,
++                     SmallVectorImpl<MachineOperand> &Cond,
++                     bool AllowModify) const override;
++
++  unsigned insertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
++                        MachineBasicBlock *FBB, ArrayRef<MachineOperand> Cond,
++                        const DebugLoc &,
++                        int *BytesAdded = nullptr) const override;
++
++  unsigned removeBranch(MachineBasicBlock &MBB,
++                        int *BytesRemoved = nullptr) const override;
++
++  MachineBasicBlock *getBranchDestBlock(const MachineInstr &MI) const override;
++
++  void copyPhysReg(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
++                   const DebugLoc &, MCRegister DestReg, MCRegister SrcReg,
++                   bool KillSrc) const override;
++
++  void storeRegToStackSlot(MachineBasicBlock &MBB,
++                           MachineBasicBlock::iterator MI, Register SrcReg,
++                           bool IsKill, int FrameIndex,
++                           const TargetRegisterClass *RC,
++                           const TargetRegisterInfo *TRI) const override;
++
++  void loadRegFromStackSlot(MachineBasicBlock &MBB,
++                            MachineBasicBlock::iterator MI, Register DestReg,
++                            int FrameIndex, const TargetRegisterClass *RC,
++                            const TargetRegisterInfo *TRI) const override;
++
++  bool
++  reverseBranchCondition(SmallVectorImpl<MachineOperand> &Cond) const override;
++
++  virtual bool getBaseAndOffsetPosition(const MachineInstr &MI,
++                                        unsigned &BasePos,
++                                        unsigned &OffsetPos) const override;
++};
++
++} // end namespace llvm
++
++#endif // __LLVM_LIB_TARGET_SIM_SIMINSTRINFO_H__
+diff --git a/llvm/lib/Target/sim/simInstrInfo.td b/llvm/lib/Target/sim/simInstrInfo.td
+new file mode 100644
+index 000000000000..ab6fe2271419
+--- /dev/null
++++ b/llvm/lib/Target/sim/simInstrInfo.td
+@@ -0,0 +1,593 @@
++//===----------------------------------------------------------------------===//
++//
++// This file contains the sim implementation of the TargetInstrInfo class.
++//
++//===----------------------------------------------------------------------===//
++
++//===----------------------------------------------------------------------===//
++// RISC-V specific DAG Nodes.
++//===----------------------------------------------------------------------===//
++
++// Target-independent type requirements, but with target-specific formats.
++def SDT_CallSeqStart : SDCallSeqStart<[SDTCisVT<0, i32>,
++                                       SDTCisVT<1, i32>]>;
++def SDT_CallSeqEnd   : SDCallSeqEnd<[SDTCisVT<0, i32>,
++                                     SDTCisVT<1, i32>]>;
++
++// Target-dependent type requirements.
++def SDT_simCall     : SDTypeProfile<0, -1, [SDTCisVT<0, XLenVT>]>;
++def SDT_simSelectCC : SDTypeProfile<1, 5, [SDTCisSameAs<1, 2>,
++                                             SDTCisVT<3, OtherVT>,
++                                             SDTCisSameAs<0, 4>,
++                                             SDTCisSameAs<4, 5>]>;
++def SDT_simBrCC : SDTypeProfile<0, 4, [SDTCisSameAs<0, 1>,
++                                         SDTCisVT<2, OtherVT>,
++                                         SDTCisVT<3, OtherVT>]>;
++def SDT_simReadCSR  : SDTypeProfile<1, 1, [SDTCisInt<0>, SDTCisInt<1>]>;
++def SDT_simWriteCSR : SDTypeProfile<0, 2, [SDTCisInt<0>, SDTCisInt<1>]>;
++def SDT_simSwapCSR  : SDTypeProfile<1, 2, [SDTCisInt<0>, SDTCisInt<1>,
++                                             SDTCisInt<2>]>;
++def SDT_simReadCycleWide : SDTypeProfile<2, 0, [SDTCisVT<0, i32>,
++                                                  SDTCisVT<1, i32>]>;
++def SDT_simIntUnaryOpW : SDTypeProfile<1, 1, [
++  SDTCisSameAs<0, 1>, SDTCisVT<0, i64>
++]>;
++def SDT_simIntBinOpW : SDTypeProfile<1, 2, [
++  SDTCisSameAs<0, 1>, SDTCisSameAs<0, 2>, SDTCisVT<0, i64>
++]>;
++def SDT_simIntShiftDOpW : SDTypeProfile<1, 3, [
++  SDTCisSameAs<0, 1>, SDTCisSameAs<0, 2>, SDTCisVT<0, i64>, SDTCisVT<3, i64>
++]>;
++
++// Target-independent nodes, but with target-specific formats.
++def callseq_start : SDNode<"ISD::CALLSEQ_START", SDT_CallSeqStart,
++                           [SDNPHasChain, SDNPOutGlue]>;
++def callseq_end   : SDNode<"ISD::CALLSEQ_END", SDT_CallSeqEnd,
++                           [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue]>;
++
++// Target-dependent nodes.
++def sim_call      : SDNode<"simISD::CALL", SDT_simCall,
++                             [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
++                              SDNPVariadic]>;
++def sim_ret_flag  : SDNode<"simISD::RET_FLAG", SDTNone,
++                             [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
++def sim_uret_flag : SDNode<"simISD::URET_FLAG", SDTNone,
++                             [SDNPHasChain, SDNPOptInGlue]>;
++def sim_sret_flag : SDNode<"simISD::SRET_FLAG", SDTNone,
++                             [SDNPHasChain, SDNPOptInGlue]>;
++def sim_mret_flag : SDNode<"simISD::MRET_FLAG", SDTNone,
++                             [SDNPHasChain, SDNPOptInGlue]>;
++def sim_selectcc  : SDNode<"simISD::SELECT_CC", SDT_simSelectCC>;
++def sim_brcc      : SDNode<"simISD::BR_CC", SDT_simBrCC,
++                             [SDNPHasChain]>;
++def sim_tail      : SDNode<"simISD::TAIL", SDT_simCall,
++                             [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
++                              SDNPVariadic]>;
++def sim_sllw      : SDNode<"simISD::SLLW", SDT_simIntBinOpW>;
++def sim_sraw      : SDNode<"simISD::SRAW", SDT_simIntBinOpW>;
++def sim_srlw      : SDNode<"simISD::SRLW", SDT_simIntBinOpW>;
++def sim_read_csr  : SDNode<"simISD::READ_CSR", SDT_simReadCSR,
++                             [SDNPHasChain]>;
++def sim_write_csr : SDNode<"simISD::WRITE_CSR", SDT_simWriteCSR,
++                             [SDNPHasChain]>;
++def sim_swap_csr  : SDNode<"simISD::SWAP_CSR", SDT_simSwapCSR,
++                             [SDNPHasChain]>;
++
++def sim_read_cycle_wide : SDNode<"simISD::READ_CYCLE_WIDE",
++                                   SDT_simReadCycleWide,
++                                   [SDNPHasChain, SDNPSideEffect]>;
++
++def sim_add_lo : SDNode<"simISD::ADD_LO", SDTIntBinOp>;
++def sim_hi : SDNode<"simISD::HI", SDTIntUnaryOp>;
++def sim_lla : SDNode<"simISD::LLA", SDTIntUnaryOp>;
++def sim_add_tprel : SDNode<"simISD::ADD_TPREL",
++                             SDTypeProfile<1, 3, [SDTCisSameAs<0, 1>,
++                                                  SDTCisSameAs<0, 2>,
++                                                  SDTCisSameAs<0, 3>,
++                                                  SDTCisInt<0>]>>;
++
++def sim_la : SDNode<"simISD::LA", SDTLoad,
++                      [SDNPHasChain, SDNPMayLoad, SDNPMemOperand]>;
++def sim_la_tls_ie : SDNode<"simISD::LA_TLS_IE", SDTLoad,
++                             [SDNPHasChain, SDNPMayLoad, SDNPMemOperand]>;
++def sim_la_tls_gd : SDNode<"simISD::LA_TLS_GD", SDTIntUnaryOp>;
++
++//===----------------------------------------------------------------------===//
++// sim Operand, Complex Patterns and Transformations Definitions.
++//===----------------------------------------------------------------------===//
++
++class ImmXLenAsmOperand<string prefix, string suffix = ""> : AsmOperandClass {
++  let Name = prefix # "ImmXLen" # suffix;
++  let RenderMethod = "addImmOperands";
++  let DiagnosticType = !strconcat("Invalid", Name);
++}
++
++class ImmAsmOperand<string prefix, int width, string suffix> : AsmOperandClass {
++  let Name = prefix # "Imm" # width # suffix;
++  let RenderMethod = "addImmOperands";
++  let DiagnosticType = !strconcat("Invalid", Name);
++}
++
++// A parse method for (${gpr}) or 0(${gpr}), where the 0 is be silently ignored.
++def ZeroOffsetMemOpOperand : AsmOperandClass {
++  let Name = "ZeroOffsetMemOpOperand";
++  let RenderMethod = "addRegOperands";
++  let PredicateMethod = "isGPR";
++  let ParserMethod = "parseZeroOffsetMemOp";
++}
++
++// Check if (add r, imm) can be optimized to (ADDI (ADDI r, imm0), imm1),
++// in which imm = imm0 + imm1 and both imm0 and imm1 are simm12.
++def AddiPair : PatLeaf<(imm), [{
++  if (!N->hasOneUse())
++    return false;
++  // The immediate operand must be in range [-4096,-2049] or [2048,4094].
++  int64_t Imm = N->getSExtValue();
++  return (-4096 <= Imm && Imm <= -2049) || (2048 <= Imm && Imm <= 4094);
++}]>;
++
++// Return imm/2.
++def AddiPairImmA : SDNodeXForm<imm, [{
++  return CurDAG->getTargetConstant(N->getSExtValue() / 2, SDLoc(N),
++                                   N->getValueType(0));
++}]>;
++
++// Return imm - imm/2.
++def AddiPairImmB : SDNodeXForm<imm, [{
++  int64_t Imm = N->getSExtValue();
++  return CurDAG->getTargetConstant(Imm - Imm / 2, SDLoc(N),
++                                   N->getValueType(0));
++}]>;
++
++def GPRMemZeroOffset : RegisterOperand<GPR> {
++  let ParserMatchClass = ZeroOffsetMemOpOperand;
++  let PrintMethod = "printZeroOffsetMemOp";
++}
++
++class SImmAsmOperand<int width, string suffix = "">
++    : ImmAsmOperand<"S", width, suffix> {
++}
++
++class UImmAsmOperand<int width, string suffix = "">
++    : ImmAsmOperand<"U", width, suffix> {
++}
++
++def UImmLog2XLenAsmOperand : AsmOperandClass {
++  let Name = "UImmLog2XLen";
++  let RenderMethod = "addImmOperands";
++  let DiagnosticType = "InvalidUImmLog2XLen";
++}
++
++def uimmlog2xlen : Operand<XLenVT>, ImmLeaf<XLenVT, [{
++  return isUInt<5>(Imm);
++}]> {
++  let ParserMatchClass = UImmLog2XLenAsmOperand;
++  // TODO: should ensure invalid shamt is rejected when decoding.
++  let DecoderMethod = "decodeUImmOperand<6>";
++  let MCOperandPredicate = [{
++    int64_t Imm;
++    if (!MCOp.evaluateAsConstantImm(Imm))
++      return false;
++    if (STI.getTargetTriple().isArch64Bit())
++      return isUInt<6>(Imm);
++    return isUInt<5>(Imm);
++  }];
++  let OperandType = "OPERAND_UIMMLOG2XLEN";
++  let OperandNamespace = "simOp";
++}
++
++def simm12 : Operand<XLenVT>, ImmLeaf<XLenVT, [{return isInt<12>(Imm);}]> {
++  let ParserMatchClass = SImmAsmOperand<12>;
++  let EncoderMethod = "getImmOpValue";
++  let DecoderMethod = "decodeSImmOperand<12>";
++  let MCOperandPredicate = [{
++    int64_t Imm;
++    if (MCOp.evaluateAsConstantImm(Imm))
++      return isInt<12>(Imm);
++    return MCOp.isBareSymbolRef();
++  }];
++  let OperandType = "OPERAND_SIMM12";
++  let OperandNamespace = "simOp";
++}
++
++
++// A 13-bit signed immediate where the least significant bit is zero.
++def simm13_lsb0 : Operand<OtherVT> {
++  let ParserMatchClass = SImmAsmOperand<13, "Lsb0">;
++  let PrintMethod = "printBranchOperand";
++  let EncoderMethod = "getImmOpValueAsr1";
++  let DecoderMethod = "decodeSImmOperandAndLsl1<13>";
++  let OperandType = "OPERAND_PCREL";
++}
++
++class UImm20Operand : Operand<XLenVT> {
++  let EncoderMethod = "getImmOpValue";
++  let DecoderMethod = "decodeUImmOperand<20>";
++  let MCOperandPredicate = [{
++    int64_t Imm;
++    if (MCOp.evaluateAsConstantImm(Imm))
++      return isUInt<20>(Imm);
++    return MCOp.isBareSymbolRef();
++  }];
++  let OperandType = "OPERAND_UIMM20";
++  let OperandNamespace = "simOp";
++}
++
++def uimm20_lui : UImm20Operand {
++  let ParserMatchClass = UImmAsmOperand<20, "LUI">;
++}
++def uimm20_auipc : UImm20Operand {
++  let ParserMatchClass = UImmAsmOperand<20, "AUIPC">;
++}
++
++def Simm21Lsb0JALAsmOperand : SImmAsmOperand<21, "Lsb0JAL"> {
++  let ParserMethod = "parseJALOffset";
++}
++
++def ixlenimm_li : Operand<XLenVT> {
++  let ParserMatchClass = ImmXLenAsmOperand<"", "LI">;
++}
++
++// A 21-bit signed immediate where the least significant bit is zero.
++def simm21_lsb0_jal : Operand<OtherVT> {
++  let ParserMatchClass = Simm21Lsb0JALAsmOperand;
++  let PrintMethod = "printBranchOperand";
++  let EncoderMethod = "getImmOpValueAsr1";
++  let DecoderMethod = "decodeSImmOperandAndLsl1<21>";
++  let MCOperandPredicate = [{
++    int64_t Imm;
++    if (MCOp.evaluateAsConstantImm(Imm))
++      return isShiftedInt<20, 1>(Imm);
++    return MCOp.isBareSymbolRef();
++  }];
++  let OperandType = "OPERAND_PCREL";
++}
++
++def BareSymbol : AsmOperandClass {
++  let Name = "BareSymbol";
++  let RenderMethod = "addImmOperands";
++  let DiagnosticType = "InvalidBareSymbol";
++  let ParserMethod = "parseBareSymbol";
++}
++
++// A bare symbol.
++def bare_symbol : Operand<XLenVT> {
++  let ParserMatchClass = BareSymbol;
++}
++
++
++def CallSymbol : AsmOperandClass {
++  let Name = "CallSymbol";
++  let RenderMethod = "addImmOperands";
++  let DiagnosticType = "InvalidCallSymbol";
++  let ParserMethod = "parseCallSymbol";
++}
++
++// A bare symbol used in call/tail only.
++def call_symbol : Operand<XLenVT> {
++  let ParserMatchClass = CallSymbol;
++}
++
++//===----------------------------------------------------------------------===//
++// Instruction Class Templates
++//===----------------------------------------------------------------------===//
++
++//===----------------------------------------------------------------------===//
++// Inst formats
++//===----------------------------------------------------------------------===//
++
++include "simInstrFormats.td"
++
++
++let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in
++class BranchCC_rri<bits<3> funct3, string opcodestr>
++    : simInstB<funct3, OPC_BRANCH, (outs),
++              (ins GPR:$rs1, GPR:$rs2, simm13_lsb0:$imm12),
++              opcodestr, "$rs1, $rs2, $imm12">,
++      Sched<[WriteJmp, ReadJmp, ReadJmp]> {
++  let isBranch = 1;
++  let isTerminator = 1;
++}
++
++let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in
++class ALU_ri<bits<3> funct3, string opcodestr>
++    : simInstI<funct3, OPC_OP_IMM, (outs GPR:$rd), (ins GPR:$rs1, simm12:$imm12),
++              opcodestr, "$rd, $rs1, $imm12">,
++      Sched<[WriteIALU, ReadIALU]>;
++
++
++let hasSideEffects = 0, mayLoad = 1, mayStore = 0 in {
++class Load_ri<bits<3> funct3, string opcodestr>
++    : simInstI<funct3, OPC_LOAD, (outs GPR:$rd), (ins GPR:$rs1, simm12:$imm12),
++              opcodestr, "$rd, ${imm12}(${rs1})">;
++
++class HLoad_r<bits<7> funct7, bits<5> funct5, string opcodestr>
++    : simInstR<funct7, 0b100, OPC_SYSTEM, (outs GPR:$rd),
++              (ins GPRMemZeroOffset:$rs1), opcodestr, "$rd, $rs1"> {
++  let rs2 = funct5;
++}
++}
++
++// Operands for stores are in the order srcreg, base, offset rather than
++// reflecting the order these fields are specified in the instruction
++// encoding.
++let hasSideEffects = 0, mayLoad = 0, mayStore = 1 in {
++class Store_rri<bits<3> funct3, string opcodestr>
++    : simInstS<funct3, OPC_STORE, (outs),
++              (ins GPR:$rs2, GPR:$rs1, simm12:$imm12),
++              opcodestr, "$rs2, ${imm12}(${rs1})">;
++}
++
++let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in
++class Shift_ri<bits<5> imm11_7, bits<3> funct3, string opcodestr>
++    : simInstIShift<imm11_7, funct3, OPC_OP_IMM, (outs GPR:$rd),
++                   (ins GPR:$rs1, uimmlog2xlen:$shamt), opcodestr,
++                   "$rd, $rs1, $shamt">,
++      Sched<[WriteShiftImm, ReadShiftImm]>;
++
++let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in
++class ALU_rr<bits<7> funct7, bits<3> funct3, string opcodestr>
++    : simInstR<funct7, funct3, OPC_OP, (outs GPR:$rd), (ins GPR:$rs1, GPR:$rs2),
++              opcodestr, "$rd, $rs1, $rs2">;
++
++//===----------------------------------------------------------------------===//
++// Instructions
++//===----------------------------------------------------------------------===//
++
++let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in {
++let isReMaterializable = 1, isAsCheapAsAMove = 1 in
++def LUI : simInstU<OPC_LUI, (outs GPR:$rd), (ins uimm20_lui:$imm20),
++                  "lui", "$rd, $imm20">, Sched<[WriteIALU]>;
++
++def AUIPC : simInstU<OPC_AUIPC, (outs GPR:$rd), (ins uimm20_auipc:$imm20),
++                    "auipc", "$rd, $imm20">, Sched<[WriteIALU]>;
++
++let isCall = 1 in
++def JAL : simInstJ<OPC_JAL, (outs GPR:$rd), (ins simm21_lsb0_jal:$imm20),
++                  "jal", "$rd, $imm20">, Sched<[WriteJal]>;
++
++let isCall = 1 in
++def JALR : simInstI<0b000, OPC_JALR, (outs GPR:$rd),
++                   (ins GPR:$rs1, simm12:$imm12),
++                   "jalr", "$rd, ${imm12}(${rs1})">,
++           Sched<[WriteJalr, ReadJalr]>;
++} // hasSideEffects = 0, mayLoad = 0, mayStore = 0
++
++def BEQ  : BranchCC_rri<0b000, "beq">;
++def BNE  : BranchCC_rri<0b001, "bne">;
++def BLT  : BranchCC_rri<0b100, "blt">;
++def BGE  : BranchCC_rri<0b101, "bge">;
++def BLTU : BranchCC_rri<0b110, "bltu">;
++def BGEU : BranchCC_rri<0b111, "bgeu">;
++
++def LB  : Load_ri<0b000, "lb">, Sched<[WriteLDB, ReadMemBase]>;
++def LH  : Load_ri<0b001, "lh">, Sched<[WriteLDH, ReadMemBase]>;
++def LW  : Load_ri<0b010, "lw">, Sched<[WriteLDW, ReadMemBase]>;
++def LBU : Load_ri<0b100, "lbu">, Sched<[WriteLDB, ReadMemBase]>;
++def LHU : Load_ri<0b101, "lhu">, Sched<[WriteLDH, ReadMemBase]>;
++
++def SB : Store_rri<0b000, "sb">, Sched<[WriteSTB, ReadStoreData, ReadMemBase]>;
++def SH : Store_rri<0b001, "sh">, Sched<[WriteSTH, ReadStoreData, ReadMemBase]>;
++def SW : Store_rri<0b010, "sw">, Sched<[WriteSTW, ReadStoreData, ReadMemBase]>;
++
++
++def SLLI : Shift_ri<0b00000, 0b001, "slli">;
++def SRLI : Shift_ri<0b00000, 0b101, "srli">;
++def SRAI : Shift_ri<0b01000, 0b101, "srai">;
++
++def ADDI  : ALU_ri<0b000, "addi">;
++
++let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in
++def ADDIW : simInstI<0b000, OPC_OP_IMM_32, (outs GPR:$rd),
++                    (ins GPR:$rs1, simm12:$imm12),
++                    "addiw", "$rd, $rs1, $imm12">,
++            Sched<[WriteIALU32, ReadIALU32]>;
++
++def ADD  : ALU_rr<0b0000000, 0b000, "add">, Sched<[WriteIALU, ReadIALU, ReadIALU]>;
++def SUB  : ALU_rr<0b0100000, 0b000, "sub">, Sched<[WriteIALU, ReadIALU, ReadIALU]>;
++def SLL  : ALU_rr<0b0000000, 0b001, "sll">, Sched<[WriteShiftReg, ReadShiftReg, ReadShiftReg]>;
++def SLT  : ALU_rr<0b0000000, 0b010, "slt">, Sched<[WriteIALU, ReadIALU, ReadIALU]>;
++def SLTU : ALU_rr<0b0000000, 0b011, "sltu">, Sched<[WriteIALU, ReadIALU, ReadIALU]>;
++def XOR  : ALU_rr<0b0000000, 0b100, "xor">, Sched<[WriteIALU, ReadIALU, ReadIALU]>;
++def SRL  : ALU_rr<0b0000000, 0b101, "srl">, Sched<[WriteShiftReg, ReadShiftReg, ReadShiftReg]>;
++def SRA  : ALU_rr<0b0100000, 0b101, "sra">, Sched<[WriteShiftReg, ReadShiftReg, ReadShiftReg]>;
++def OR   : ALU_rr<0b0000000, 0b110, "or">, Sched<[WriteIALU, ReadIALU, ReadIALU]>;
++def AND  : ALU_rr<0b0000000, 0b111, "and">, Sched<[WriteIALU, ReadIALU, ReadIALU]>;
++
++def SLTI  : ALU_ri<0b010, "slti">;
++def SLTIU : ALU_ri<0b011, "sltiu">;
++
++let isReMaterializable = 1, isAsCheapAsAMove = 1 in {
++def XORI  : ALU_ri<0b100, "xori">;
++def ORI   : ALU_ri<0b110, "ori">;
++}
++
++def ANDI  : ALU_ri<0b111, "andi">;
++
++//===----------------------------------------------------------------------===//
++// Pseudo-instructions and codegen patterns
++//
++// Naming convention: For 'generic' pattern classes, we use the naming
++// convention PatTy1Ty2. For pattern classes which offer a more complex
++// expansion, prefix the class name, e.g. BccPat.
++//===----------------------------------------------------------------------===//
++
++/// Branches and jumps
++
++// Match `sim_brcc` and lower to the appropriate RISC-V branch instruction.
++class BccPat<CondCode Cond, simInstB Inst>
++    : Pat<(sim_brcc GPR:$rs1, GPR:$rs2, Cond, bb:$imm12),
++          (Inst GPR:$rs1, GPR:$rs2, simm13_lsb0:$imm12)>;
++
++def : BccPat<SETEQ, BEQ>;
++def : BccPat<SETNE, BNE>;
++def : BccPat<SETLT, BLT>;
++def : BccPat<SETGE, BGE>;
++def : BccPat<SETULT, BLTU>;
++def : BccPat<SETUGE, BGEU>;
++
++let isBarrier = 1, isBranch = 1, isTerminator = 1 in
++def PseudoBR : Pseudo<(outs), (ins simm21_lsb0_jal:$imm20), [(br bb:$imm20)]>,
++               PseudoInstExpansion<(JAL X0, simm21_lsb0_jal:$imm20)>;
++
++// PseudoCALL is a pseudo instruction which will eventually expand to auipc
++// and jalr while encoding. This is desirable, as an auipc+jalr pair with
++// R_sim_CALL and R_sim_RELAX relocations can be be relaxed by the linker
++// if the offset fits in a signed 21-bit immediate.
++// Define AsmString to print "call" when compile with -S flag.
++// Define isCodeGenOnly = 0 to support parsing assembly "call" instruction.
++let isCall = 1, Defs = [X1], isCodeGenOnly = 0, Size = 8 in
++def PseudoCALL : Pseudo<(outs), (ins call_symbol:$func), []> {
++  let AsmString = "call\t$func";
++}
++
++def : Pat<(sim_call tglobaladdr:$func), (PseudoCALL tglobaladdr:$func)>;
++def : Pat<(sim_call texternalsym:$func), (PseudoCALL texternalsym:$func)>;
++
++
++let isCall = 1, Defs = [X1] in
++def PseudoCALLIndirect : Pseudo<(outs), (ins GPRJALR:$rs1),
++                                [(sim_call GPRJALR:$rs1)]>,
++                         PseudoInstExpansion<(JALR X1, GPR:$rs1, 0)>;
++
++let isBarrier = 1, isReturn = 1, isTerminator = 1 in
++def PseudoRET : Pseudo<(outs), (ins), [(sim_ret_flag)]>,
++                PseudoInstExpansion<(JALR X0, X1, 0)>;
++
++let isBarrier = 1, isBranch = 1, isIndirectBranch = 1, isTerminator = 1 in
++def PseudoBRIND : Pseudo<(outs), (ins GPRJALR:$rs1, simm12:$imm12), []>,
++                  PseudoInstExpansion<(JALR X0, GPR:$rs1, simm12:$imm12)>;
++
++def : InstAlias<"nop",           (ADDI      X0,      X0,       0)>;
++def : InstAlias<"ret",                   (JALR      X0,      X1, 0), 4>;
++
++// Note that the size is 32 because up to 8 32-bit instructions are needed to
++// generate an arbitrary 64-bit immediate. However, the size does not really
++// matter since PseudoLI is currently only used in the AsmParser where it gets
++// expanded to real instructions immediately.
++let hasSideEffects = 0, mayLoad = 0, mayStore = 0, Size = 32,
++    isCodeGenOnly = 0, isAsmParserOnly = 1 in
++def PseudoLI : Pseudo<(outs GPR:$rd), (ins ixlenimm_li:$imm), [],
++                      "li", "$rd, $imm">;
++
++def PseudoLB  : PseudoLoad<"lb">;
++def PseudoLBU : PseudoLoad<"lbu">;
++def PseudoLH  : PseudoLoad<"lh">;
++def PseudoLHU : PseudoLoad<"lhu">;
++def PseudoLW  : PseudoLoad<"lw">;
++
++def PseudoSB  : PseudoStore<"sb">;
++def PseudoSH  : PseudoStore<"sh">;
++def PseudoSW  : PseudoStore<"sw">;
++
++def : Pat<(brind GPRJALR:$rs1), (PseudoBRIND GPRJALR:$rs1, 0)>;
++def : Pat<(brind (add GPRJALR:$rs1, simm12:$imm12)),
++          (PseudoBRIND GPRJALR:$rs1, simm12:$imm12)>;
++
++let EmitPriority = 0 in {
++def : InstAlias<"lb $rd, (${rs1})",
++                (LB  GPR:$rd, GPR:$rs1, 0)>;
++def : InstAlias<"lh $rd, (${rs1})",
++                (LH  GPR:$rd, GPR:$rs1, 0)>;
++def : InstAlias<"lw $rd, (${rs1})",
++                (LW  GPR:$rd, GPR:$rs1, 0)>;
++def : InstAlias<"lbu $rd, (${rs1})",
++                (LBU  GPR:$rd, GPR:$rs1, 0)>;
++def : InstAlias<"lhu $rd, (${rs1})",
++                (LHU  GPR:$rd, GPR:$rs1, 0)>;
++
++def : InstAlias<"sb $rs2, (${rs1})",
++                (SB  GPR:$rs2, GPR:$rs1, 0)>;
++def : InstAlias<"sh $rs2, (${rs1})",
++                (SH  GPR:$rs2, GPR:$rs1, 0)>;
++def : InstAlias<"sw $rs2, (${rs1})",
++                (SW  GPR:$rs2, GPR:$rs1, 0)>;
++}
++def IsOrAdd: PatFrag<(ops node:$A, node:$B), (or node:$A, node:$B), [{
++  return isOrEquivalentToAdd(N);
++}]>;
++
++class PatGpr<SDPatternOperator OpNode, simInst Inst>
++    : Pat<(OpNode GPR:$rs1), (Inst GPR:$rs1)>;
++class PatGprGpr<SDPatternOperator OpNode, simInst Inst>
++    : Pat<(OpNode GPR:$rs1, GPR:$rs2), (Inst GPR:$rs1, GPR:$rs2)>;
++
++class PatGprImm<SDPatternOperator OpNode, simInst Inst, ImmLeaf ImmType>
++    : Pat<(XLenVT (OpNode (XLenVT GPR:$rs1), ImmType:$imm)),
++          (Inst GPR:$rs1, ImmType:$imm)>;
++class PatGprSimm12<SDPatternOperator OpNode, simInstI Inst>
++    : PatGprImm<OpNode, Inst, simm12>;
++class PatGprUimmLog2XLen<SDPatternOperator OpNode, simInstIShift Inst>
++    : PatGprImm<OpNode, Inst, uimmlog2xlen>;
++
++def AddrFI : ComplexPattern<iPTR, 1, "SelectAddrFI", [frameindex], []>;
++def BaseAddr : ComplexPattern<iPTR, 1, "SelectBaseAddr">;
++
++/// Simple arithmetic operations
++
++def : PatGprGpr<add, ADD>;
++def : PatGprSimm12<add, ADDI>;
++def : PatGprGpr<sub, SUB>;
++def : PatGprGpr<or, OR>;
++def : PatGprSimm12<or, ORI>;
++def : PatGprGpr<and, AND>;
++def : PatGprSimm12<and, ANDI>;
++def : PatGprGpr<xor, XOR>;
++def : PatGprSimm12<xor, XORI>;
++def : PatGprUimmLog2XLen<shl, SLLI>;
++def : PatGprUimmLog2XLen<srl, SRLI>;
++def : PatGprUimmLog2XLen<sra, SRAI>;
++
++/// FrameIndex calculations
++
++def : Pat<(add (XLenVT AddrFI:$Rs), simm12:$imm12),
++          (ADDI (XLenVT AddrFI:$Rs), simm12:$imm12)>;
++def : Pat<(IsOrAdd (XLenVT AddrFI:$Rs), simm12:$imm12),
++          (ADDI (XLenVT AddrFI:$Rs), simm12:$imm12)>;
++
++/// Simple optimization
++def : Pat<(add GPR:$rs1, (AddiPair:$rs2)),
++          (ADDI (ADDI GPR:$rs1, (AddiPairImmB AddiPair:$rs2)),
++                (AddiPairImmA GPR:$rs2))>;
++
++/// Loads
++
++multiclass LdPat<PatFrag LoadOp, simInst Inst, ValueType vt = XLenVT> {
++  def : Pat<(vt (LoadOp BaseAddr:$rs1)), (Inst BaseAddr:$rs1, 0)>;
++  def : Pat<(vt (LoadOp (add BaseAddr:$rs1, simm12:$imm12))),
++            (Inst BaseAddr:$rs1, simm12:$imm12)>;
++  def : Pat<(vt (LoadOp (IsOrAdd AddrFI:$rs1, simm12:$imm12))),
++            (Inst AddrFI:$rs1, simm12:$imm12)>;
++}
++
++defm : LdPat<sextloadi8, LB>;
++defm : LdPat<extloadi8, LB>;
++defm : LdPat<sextloadi16, LH>;
++defm : LdPat<extloadi16, LH>;
++defm : LdPat<load, LW, i32>;
++defm : LdPat<zextloadi8, LBU>;
++defm : LdPat<zextloadi16, LHU>;
++
++/// Stores
++
++multiclass StPat<PatFrag StoreOp, simInst Inst, RegisterClass StTy,
++                 ValueType vt> {
++  def : Pat<(StoreOp (vt StTy:$rs2), BaseAddr:$rs1),
++            (Inst StTy:$rs2, BaseAddr:$rs1, 0)>;
++  def : Pat<(StoreOp (vt StTy:$rs2), (add BaseAddr:$rs1, simm12:$imm12)),
++            (Inst StTy:$rs2, BaseAddr:$rs1, simm12:$imm12)>;
++  def : Pat<(StoreOp (vt StTy:$rs2), (IsOrAdd AddrFI:$rs1, simm12:$imm12)),
++            (Inst StTy:$rs2, AddrFI:$rs1, simm12:$imm12)>;
++}
++
++defm : StPat<truncstorei8, SB, GPR, XLenVT>;
++defm : StPat<truncstorei16, SH, GPR, XLenVT>;
++defm : StPat<store, SW, GPR, i32>;
++
++// Pessimistically assume the stack pointer will be clobbered
++let Defs = [X2], Uses = [X2] in {
++def ADJCALLSTACKDOWN : Pseudo<(outs), (ins i32imm:$amt1, i32imm:$amt2),
++                              [(callseq_start timm:$amt1, timm:$amt2)]>;
++def ADJCALLSTACKUP   : Pseudo<(outs), (ins i32imm:$amt1, i32imm:$amt2),
++                              [(callseq_end timm:$amt1, timm:$amt2)]>;
++} // Defs = [X2], Uses = [X2]
+diff --git a/llvm/lib/Target/sim/simMCInstLower.cpp b/llvm/lib/Target/sim/simMCInstLower.cpp
+new file mode 100644
+index 000000000000..0011e51d7454
+--- /dev/null
++++ b/llvm/lib/Target/sim/simMCInstLower.cpp
+@@ -0,0 +1,83 @@
++#include "sim.h"
++#include "simSubtarget.h"
++//#include "MCTargetDesc/simMCExpr.h"
++#include "llvm/CodeGen/AsmPrinter.h"
++#include "llvm/CodeGen/MachineBasicBlock.h"
++#include "llvm/CodeGen/MachineInstr.h"
++#include "llvm/MC/MCAsmInfo.h"
++#include "llvm/MC/MCContext.h"
++#include "llvm/MC/MCExpr.h"
++#include "llvm/MC/MCInst.h"
++#include "llvm/Support/ErrorHandling.h"
++#include "llvm/Support/raw_ostream.h"
++
++using namespace llvm;
++
++// TODO: verify
++static MCOperand lowerSymbolOperand(const MachineOperand &MO, MCSymbol *Sym,
++                                    const AsmPrinter &AP) {
++  MCContext &Ctx = AP.OutContext;
++
++  const MCExpr *ME =
++      MCSymbolRefExpr::create(Sym, MCSymbolRefExpr::VK_None, Ctx);
++
++  if (!MO.isJTI() && !MO.isMBB() && MO.getOffset())
++    ME = MCBinaryExpr::createAdd(
++        ME, MCConstantExpr::create(MO.getOffset(), Ctx), Ctx);
++
++  return MCOperand::createExpr(ME);
++}
++
++bool llvm::LowersimMachineOperandToMCOperand(const MachineOperand &MO,
++                                              MCOperand &MCOp,
++                                              const AsmPrinter &AP) {
++  switch (MO.getType()) {
++  default:
++    report_fatal_error("LowersimMachineInstrToMCInst: unknown operand type");
++  case MachineOperand::MO_Register:
++    // Ignore all implicit register operands.
++    if (MO.isImplicit())
++      return false;
++    MCOp = MCOperand::createReg(MO.getReg());
++    break;
++  case MachineOperand::MO_RegisterMask:
++    // Regmasks are like implicit defs.
++    return false;
++  case MachineOperand::MO_Immediate:
++    MCOp = MCOperand::createImm(MO.getImm());
++    break;
++  case MachineOperand::MO_MachineBasicBlock:
++    MCOp = lowerSymbolOperand(MO, MO.getMBB()->getSymbol(), AP);
++    break;
++  case MachineOperand::MO_GlobalAddress:
++    MCOp = lowerSymbolOperand(MO, AP.getSymbolPreferLocal(*MO.getGlobal()), AP);
++    break;
++  case MachineOperand::MO_BlockAddress:
++    MCOp = lowerSymbolOperand(
++        MO, AP.GetBlockAddressSymbol(MO.getBlockAddress()), AP);
++    break;
++  case MachineOperand::MO_ExternalSymbol:
++    MCOp = lowerSymbolOperand(
++        MO, AP.GetExternalSymbolSymbol(MO.getSymbolName()), AP);
++    break;
++  case MachineOperand::MO_ConstantPoolIndex:
++    MCOp = lowerSymbolOperand(MO, AP.GetCPISymbol(MO.getIndex()), AP);
++    break;
++  case MachineOperand::MO_JumpTableIndex:
++    MCOp = lowerSymbolOperand(MO, AP.GetJTISymbol(MO.getIndex()), AP);
++    break;
++  }
++  return true;
++}
++
++bool llvm::lowersimMachineInstrToMCInst(const MachineInstr *MI, MCInst &OutMI,
++                                         AsmPrinter &AP) {
++  OutMI.setOpcode(MI->getOpcode());
++
++  for (const MachineOperand &MO : MI->operands()) {
++    MCOperand MCOp;
++    if (LowersimMachineOperandToMCOperand(MO, MCOp, AP))
++      OutMI.addOperand(MCOp);
++  }
++  return false;
++}
+diff --git a/llvm/lib/Target/sim/simMachineFunctionInfo.cpp b/llvm/lib/Target/sim/simMachineFunctionInfo.cpp
+new file mode 100644
+index 000000000000..9b533447445f
+--- /dev/null
++++ b/llvm/lib/Target/sim/simMachineFunctionInfo.cpp
+@@ -0,0 +1,5 @@
++#include "simMachineFunctionInfo.h"
++
++using namespace llvm;
++
++void simFunctionInfo::anchor() {}
+diff --git a/llvm/lib/Target/sim/simMachineFunctionInfo.h b/llvm/lib/Target/sim/simMachineFunctionInfo.h
+new file mode 100644
+index 000000000000..a709baedc5d1
+--- /dev/null
++++ b/llvm/lib/Target/sim/simMachineFunctionInfo.h
+@@ -0,0 +1,60 @@
++//===----------------------------------------------------------------------===//
++//
++// This file declares sim-specific per-machine-function information.
++//
++//===----------------------------------------------------------------------===//
++
++#ifndef __LLVM_LIB_TARGET_SIM_SIMMACHINEFUNCTIONINFO_H__
++#define __LLVM_LIB_TARGET_SIM_SIMMACHINEFUNCTIONINFO_H__
++
++#include "llvm/CodeGen/MachineFunction.h"
++#include <vector>
++
++namespace llvm {
++
++/// simFunctionInfo - This class is derived from MachineFunction private
++/// sim target-specific information for each MachineFunction.
++class simFunctionInfo : public MachineFunctionInfo {
++  virtual void anchor();
++
++  bool ReturnStackOffsetSet = false;
++  unsigned ReturnStackOffset = -1U;
++
++  /// FrameIndex for start of varargs area
++  int VarArgsFrameIndex = 0;
++  /// Size of the save area used for varargs
++  int VarArgsSaveSize = 0;
++  /// Size of stack frame to save callee saved registers
++  unsigned CalleeSavedStackSize = 0;
++
++public:
++  simFunctionInfo() {}
++  explicit simFunctionInfo(MachineFunction &MF) {}
++  ~simFunctionInfo() {}
++
++  void setVarArgsFrameIndex(int Off) { VarArgsFrameIndex = Off; }
++  int getVarArgsFrameIndex() const { return VarArgsFrameIndex; }
++
++  void setVarArgsSaveSize(int Size) { VarArgsSaveSize = Size; }
++  int getVarArgsSaveSize() const { return VarArgsSaveSize; }
++
++  unsigned getCalleeSavedStackSize() const { return CalleeSavedStackSize; }
++  void setCalleeSavedStackSize(unsigned Size) { CalleeSavedStackSize = Size; }
++
++  void setReturnStackOffset(unsigned Off) {
++    assert(!ReturnStackOffsetSet && "Return stack offset set twice");
++    ReturnStackOffset = Off;
++    ReturnStackOffsetSet = true;
++  }
++
++  unsigned getReturnStackOffset() const {
++    assert(ReturnStackOffsetSet && "Return stack offset not set");
++    return ReturnStackOffset;
++  }
++
++  // unsigned MaxCallStackReq = 0;
++};
++
++} // end namespace llvm
++
++#endif // __LLVM_LIB_TARGET_SIM_SIMMACHINEFUNCTIONINFO_H__
+diff --git a/llvm/lib/Target/sim/simMatInt.cpp b/llvm/lib/Target/sim/simMatInt.cpp
+new file mode 100644
+index 000000000000..f2cf5967d5ef
+--- /dev/null
++++ b/llvm/lib/Target/sim/simMatInt.cpp
+@@ -0,0 +1,91 @@
++//===- simMatInt.cpp - Immediate materialisation -------------*- C++ -*--===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#include "simMatInt.h"
++#include "MCTargetDesc/simMCTargetDesc.h"
++#include "llvm/ADT/APInt.h"
++#include "llvm/Support/MathExtras.h"
++using namespace llvm;
++
++static int getInstSeqCost(simMatInt::InstSeq &Res, bool HasRVC) {
++  if (!HasRVC)
++    return Res.size();
++
++    llvm_unreachable("wtf compressed?(hochy kushats)");
++}
++
++// Recursively generate a sequence for materializing an integer.
++static void generateInstSeqImpl(int64_t Val,
++                                const FeatureBitset &ActiveFeatures,
++                                simMatInt::InstSeq &Res) {
++  if (isInt<32>(Val)) {
++    // Depending on the active bits in the immediate Value v, the following
++    // instruction sequences are emitted:
++    //
++    // v == 0                        : ADDI
++    // v[0,12) != 0 && v[12,32) == 0 : ADDI
++    // v[0,12) == 0 && v[12,32) != 0 : LUI
++    // v[0,32) != 0                  : LUI+ADDI(W)
++    int64_t Hi20 = ((Val + 0x800) >> 12) & 0xFFFFF;
++    int64_t Lo12 = SignExtend64<12>(Val);
++
++    if (Hi20)
++      Res.push_back(simMatInt::Inst(sim::LUI, Hi20));
++
++    if (Lo12 || Hi20 == 0) {
++      unsigned AddiOpc = sim::ADDI;
++      Res.push_back(simMatInt::Inst(AddiOpc, Lo12));
++    }
++    return;
++  }
++
++  llvm_unreachable("64 bit wtf");
++}
++
++static unsigned extractRotateInfo(int64_t Val) {
++  // for case: 0b111..1..xxxxxx1..1..
++  unsigned LeadingOnes = countLeadingOnes((uint64_t)Val);
++  unsigned TrailingOnes = countTrailingOnes((uint64_t)Val);
++  if (TrailingOnes > 0 && TrailingOnes < 64 &&
++      (LeadingOnes + TrailingOnes) > (64 - 12))
++    return 64 - TrailingOnes;
++
++  // for case: 0bxxx1..1..1...xxx
++  unsigned UpperTrailingOnes = countTrailingOnes(Hi_32(Val));
++  unsigned LowerLeadingOnes = countLeadingOnes(Lo_32(Val));
++  if (UpperTrailingOnes < 32 &&
++      (UpperTrailingOnes + LowerLeadingOnes) > (64 - 12))
++    return 32 - UpperTrailingOnes;
++
++  return 0;
++}
++
++namespace llvm {
++namespace simMatInt {
++InstSeq generateInstSeq(int64_t Val, const FeatureBitset &ActiveFeatures) {
++  simMatInt::InstSeq Res;
++  generateInstSeqImpl(Val, ActiveFeatures, Res);
++  return Res;
++}
++
++int getIntMatCost(const APInt &Val, unsigned Size,
++                  const FeatureBitset &ActiveFeatures, bool CompressionCost) {
++  int PlatRegSize = 32;
++
++  // Split the constant into platform register sized chunks, and calculate cost
++  // of each chunk.
++  int Cost = 0;
++  for (unsigned ShiftVal = 0; ShiftVal < Size; ShiftVal += PlatRegSize) {
++    APInt Chunk = Val.ashr(ShiftVal).sextOrTrunc(PlatRegSize);
++    InstSeq MatSeq = generateInstSeq(Chunk.getSExtValue(), ActiveFeatures);
++    Cost += getInstSeqCost(MatSeq, false);
++  }
++  return std::max(1, Cost);
++}
++} // namespace simMatInt
++} // namespace llvm
+diff --git a/llvm/lib/Target/sim/simMatInt.h b/llvm/lib/Target/sim/simMatInt.h
+new file mode 100644
+index 000000000000..4c9a9a171649
+--- /dev/null
++++ b/llvm/lib/Target/sim/simMatInt.h
+@@ -0,0 +1,50 @@
++//===- simMatInt.h - Immediate materialisation ---------------*- C++ -*--===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#ifndef LLVM_LIB_TARGET_sim_MCTARGETDESC_MATINT_H
++#define LLVM_LIB_TARGET_sim_MCTARGETDESC_MATINT_H
++
++#include "llvm/ADT/SmallVector.h"
++#include "llvm/MC/SubtargetFeature.h"
++#include <cstdint>
++
++namespace llvm {
++class APInt;
++
++namespace simMatInt {
++struct Inst {
++  unsigned Opc;
++  int64_t Imm;
++
++  Inst(unsigned Opc, int64_t Imm) : Opc(Opc), Imm(Imm) {}
++};
++using InstSeq = SmallVector<Inst, 8>;
++
++// Helper to generate an instruction sequence that will materialise the given
++// immediate value into a register. A sequence of instructions represented by a
++// simple struct is produced rather than directly emitting the instructions in
++// order to allow this helper to be used from both the MC layer and during
++// instruction selection.
++InstSeq generateInstSeq(int64_t Val, const FeatureBitset &ActiveFeatures);
++
++// Helper to estimate the number of instructions required to materialise the
++// given immediate value into a register. This estimate does not account for
++// `Val` possibly fitting into an immediate, and so may over-estimate.
++//
++// This will attempt to produce instructions to materialise `Val` as an
++// `Size`-bit immediate.
++//
++// If CompressionCost is true it will use a different cost calculation if RVC is
++// enabled. This should be used to compare two different sequences to determine
++// which is more compressible.
++int getIntMatCost(const APInt &Val, unsigned Size,
++                  const FeatureBitset &ActiveFeatures,
++                  bool CompressionCost = false);
++} // namespace simMatInt
++} // namespace llvm
++#endif
+diff --git a/llvm/lib/Target/sim/simRegisterInfo.cpp b/llvm/lib/Target/sim/simRegisterInfo.cpp
+new file mode 100644
+index 000000000000..bff6bb12fa3e
+--- /dev/null
++++ b/llvm/lib/Target/sim/simRegisterInfo.cpp
+@@ -0,0 +1,114 @@
++#include "simRegisterInfo.h"
++#include "sim.h"
++#include "simInstrInfo.h"
++//#include "simMachineFunctionInfo.h"
++#include "simSubtarget.h"
++#include "llvm/ADT/BitVector.h"
++#include "llvm/CodeGen/MachineFrameInfo.h"
++#include "llvm/CodeGen/MachineFunction.h"
++#include "llvm/CodeGen/MachineInstrBuilder.h"
++#include "llvm/CodeGen/MachineModuleInfo.h"
++#include "llvm/CodeGen/MachineRegisterInfo.h"
++#include "llvm/CodeGen/RegisterScavenging.h"
++#include "llvm/CodeGen/TargetFrameLowering.h"
++#include "llvm/IR/Function.h"
++#include "llvm/Support/Debug.h"
++#include "llvm/Support/ErrorHandling.h"
++#include "llvm/Target/TargetMachine.h"
++#include "llvm/Target/TargetOptions.h"
++
++using namespace llvm;
++
++static_assert(sim::X1 == sim::X0 + 1, "Register list not consecutive");
++static_assert(sim::X31 == sim::X0 + 31, "Register list not consecutive");
++
++#define DEBUG_TYPE "sim-reg-info"
++
++#define GET_REGINFO_TARGET_DESC
++#include "simGenRegisterInfo.inc"
++
++simRegisterInfo::simRegisterInfo() : simGenRegisterInfo(sim::X1) {}
++
++#if 0
++bool simRegisterInfo::needsFrameMoves(const MachineFunction &MF) {
++  return MF.needsFrameMoves();
++}
++#endif
++
++const MCPhysReg *
++simRegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
++  if (MF->getFunction().getCallingConv() == CallingConv::GHC)
++    return CSR_NoRegs_SaveList;
++  if (MF->getFunction().hasFnAttribute("interrupt"))
++    return CSR_Interrupt_SaveList;
++
++  return CSR_Interrupt_SaveList;
++}
++
++// TODO: check cconv
++BitVector simRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
++  BitVector Reserved(getNumRegs());
++  // Use markSuperRegs to ensure any register aliases are also reserved
++  markSuperRegs(Reserved, sim::X0); // zero
++  markSuperRegs(Reserved, sim::X2); // sp
++  markSuperRegs(Reserved, sim::X3); // gp
++  markSuperRegs(Reserved, sim::X4); // tp
++  return Reserved;
++}
++
++bool simRegisterInfo::requiresRegisterScavenging(
++    const MachineFunction &MF) const {
++  return false; // TODO: what for?
++}
++
++#if 0
++bool simRegisterInfo::useFPForScavengingIndex(
++    const MachineFunction &MF) const {
++  llvm_unreachable("");
++}
++#endif
++
++// TODO: rewrite!
++void simRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
++                                          int SPAdj, unsigned FIOperandNum,
++                                          RegScavenger *RS) const {
++  assert(SPAdj == 0 && "Unexpected non-zero SPAdj value");
++
++  MachineInstr &MI = *II;
++  MachineFunction &MF = *MI.getParent()->getParent();
++  DebugLoc DL = MI.getDebugLoc();
++
++  int FrameIndex = MI.getOperand(FIOperandNum).getIndex();
++  Register FrameReg;
++  int Offset = getFrameLowering(MF)
++                   ->getFrameIndexReference(MF, FrameIndex, FrameReg)
++                   .getFixed();
++  Offset += MI.getOperand(FIOperandNum + 1).getImm();
++
++  if (!isInt<16>(Offset)) {
++    llvm_unreachable("");
++  }
++
++  MI.getOperand(FIOperandNum).ChangeToRegister(FrameReg, false, false, false);
++  MI.getOperand(FIOperandNum + 1).ChangeToImmediate(Offset);
++}
++
++Register simRegisterInfo::getFrameRegister(const MachineFunction &MF) const {
++  const TargetFrameLowering *TFI = getFrameLowering(MF);
++  return TFI->hasFP(MF) ? sim::X8 : sim::X2;
++}
++
++const uint32_t *
++simRegisterInfo::getCallPreservedMask(const MachineFunction &MF,
++                                      CallingConv::ID CC) const {
++  auto &Subtarget = MF.getSubtarget<simSubtarget>();
++
++  if (CC == CallingConv::GHC)
++    return CSR_NoRegs_RegMask;
++  switch (Subtarget.getTargetABI()) {
++  default:
++    llvm_unreachable("Unrecognized ABI");
++  case simABI::ABI_ILP32:
++    return CSR_ILP32_LP64_RegMask;
++  }
++}
+diff --git a/llvm/lib/Target/sim/simRegisterInfo.h b/llvm/lib/Target/sim/simRegisterInfo.h
+new file mode 100644
+index 000000000000..da412a9d0e5e
+--- /dev/null
++++ b/llvm/lib/Target/sim/simRegisterInfo.h
+@@ -0,0 +1,37 @@
++#ifndef __LLVM_LIB_TARGET_SIM_SIMREGISTERINFO_H__
++#define __LLVM_LIB_TARGET_SIM_SIMREGISTERINFO_H__
++
++#include "llvm/CodeGen/TargetRegisterInfo.h"
++
++#define GET_REGINFO_HEADER
++#include "simGenRegisterInfo.inc"
++
++namespace llvm {
++
++class TargetInstrInfo;
++class simSubtarget;
++
++struct simRegisterInfo : public simGenRegisterInfo {
++public:
++  simRegisterInfo();
++
++  const MCPhysReg *getCalleeSavedRegs(const MachineFunction *MF) const override;
++
++  const uint32_t *getCallPreservedMask(const MachineFunction &MF,
++                                       CallingConv::ID CC) const override;
++
++  BitVector getReservedRegs(const MachineFunction &MF) const override;
++
++  bool requiresRegisterScavenging(const MachineFunction &MF) const override;
++
++  void eliminateFrameIndex(MachineBasicBlock::iterator II, int SPAdj,
++                           unsigned FIOperandNum,
++                           RegScavenger *RS = nullptr) const override;
++
++  // Debug information queries.
++  Register getFrameRegister(const MachineFunction &MF) const override;
++};
++
++} // end namespace llvm
++
++#endif // __LLVM_LIB_TARGET_SIM_SIMREGISTERINFO_H__
+diff --git a/llvm/lib/Target/sim/simRegisterInfo.td b/llvm/lib/Target/sim/simRegisterInfo.td
+new file mode 100644
+index 000000000000..b8e142ef1902
+--- /dev/null
++++ b/llvm/lib/Target/sim/simRegisterInfo.td
+@@ -0,0 +1,126 @@
++//===----------------------------------------------------------------------===//
++
++//===----------------------------------------------------------------------===//
++//  Declarations that describe the sim register file
++//===----------------------------------------------------------------------===//
++
++// For tablegen(... -gen-emitter)  in CMakeLists.txt
++let Namespace = "sim" in {
++class simReg<bits<5> Enc, string n, list<string> alt = []> : Register<n> {
++  let HWEncoding{4-0} = Enc;
++  let AltNames = alt;
++}
++def ABIRegAltName : RegAltNameIndex;
++}
++
++// Integer registers
++// CostPerUse is set higher for registers that may not be compressible as they
++// are not part of GPRC, the most restrictive register class used by the
++// compressed instruction set. This will influence the greedy register
++// allocator to reduce the use of registers that can't be encoded in 16 bit
++// instructions.
++
++let RegAltNameIndices = [ABIRegAltName] in {
++  def X0  : simReg<0, "x0", ["zero"]>, DwarfRegNum<[0]>;
++  let CostPerUse = [0, 1] in {
++  def X1  : simReg<1, "x1", ["ra"]>, DwarfRegNum<[1]>;
++  def X2  : simReg<2, "x2", ["sp"]>, DwarfRegNum<[2]>;
++  def X3  : simReg<3, "x3", ["gp"]>, DwarfRegNum<[3]>;
++  def X4  : simReg<4, "x4", ["tp"]>, DwarfRegNum<[4]>;
++  def X5  : simReg<5, "x5", ["t0"]>, DwarfRegNum<[5]>;
++  def X6  : simReg<6, "x6", ["t1"]>, DwarfRegNum<[6]>;
++  def X7  : simReg<7, "x7", ["t2"]>, DwarfRegNum<[7]>;
++  }
++  def X8  : simReg<8, "x8", ["s0", "fp"]>, DwarfRegNum<[8]>;
++  def X9  : simReg<9, "x9", ["s1"]>, DwarfRegNum<[9]>;
++  def X10 : simReg<10,"x10", ["a0"]>, DwarfRegNum<[10]>;
++  def X11 : simReg<11,"x11", ["a1"]>, DwarfRegNum<[11]>;
++  def X12 : simReg<12,"x12", ["a2"]>, DwarfRegNum<[12]>;
++  def X13 : simReg<13,"x13", ["a3"]>, DwarfRegNum<[13]>;
++  def X14 : simReg<14,"x14", ["a4"]>, DwarfRegNum<[14]>;
++  def X15 : simReg<15,"x15", ["a5"]>, DwarfRegNum<[15]>;
++  let CostPerUse = [0, 1] in {
++  def X16 : simReg<16,"x16", ["a6"]>, DwarfRegNum<[16]>;
++  def X17 : simReg<17,"x17", ["a7"]>, DwarfRegNum<[17]>;
++  def X18 : simReg<18,"x18", ["s2"]>, DwarfRegNum<[18]>;
++  def X19 : simReg<19,"x19", ["s3"]>, DwarfRegNum<[19]>;
++  def X20 : simReg<20,"x20", ["s4"]>, DwarfRegNum<[20]>;
++  def X21 : simReg<21,"x21", ["s5"]>, DwarfRegNum<[21]>;
++  def X22 : simReg<22,"x22", ["s6"]>, DwarfRegNum<[22]>;
++  def X23 : simReg<23,"x23", ["s7"]>, DwarfRegNum<[23]>;
++  def X24 : simReg<24,"x24", ["s8"]>, DwarfRegNum<[24]>;
++  def X25 : simReg<25,"x25", ["s9"]>, DwarfRegNum<[25]>;
++  def X26 : simReg<26,"x26", ["s10"]>, DwarfRegNum<[26]>;
++  def X27 : simReg<27,"x27", ["s11"]>, DwarfRegNum<[27]>;
++  def X28 : simReg<28,"x28", ["t3"]>, DwarfRegNum<[28]>;
++  def X29 : simReg<29,"x29", ["t4"]>, DwarfRegNum<[29]>;
++  def X30 : simReg<30,"x30", ["t5"]>, DwarfRegNum<[30]>;
++  def X31 : simReg<31,"x31", ["t6"]>, DwarfRegNum<[31]>;
++  }
++}
++
++//===----------------------------------------------------------------------===//
++//@Register Classes
++//===----------------------------------------------------------------------===//
++
++def XLenVT : ValueTypeByHwMode<[sim32],
++                               [i32]>;
++def XLenRI : RegInfoByHwMode<
++      [sim32],
++      [RegInfo<32,32,32>]>;
++
++// The order of registers represents the preferred allocation sequence.
++// Registers are listed in the order caller-save, callee-save, specials.
++def GPR : RegisterClass<"sim", [XLenVT], 32, (add
++    (sequence "X%u", 10, 17),
++    (sequence "X%u", 5, 7),
++    (sequence "X%u", 28, 31),
++    (sequence "X%u", 8, 9),
++    (sequence "X%u", 18, 27),
++    (sequence "X%u", 0, 4)
++  )> {
++  let RegInfos = XLenRI;
++}
++
++def GPRX0 : RegisterClass<"sim", [XLenVT], 32, (add X0)> {
++  let RegInfos = XLenRI;
++}
++
++def GPRNoX0 : RegisterClass<"sim", [XLenVT], 32, (sub GPR, X0)> {
++  let RegInfos = XLenRI;
++}
++
++def GPRNoX0X2 : RegisterClass<"sim", [XLenVT], 32, (sub GPR, X0, X2)> {
++  let RegInfos = XLenRI;
++}
++
++// Don't use X1 or X5 for JALR since that is a hint to pop the return address
++// stack on some microarchitectures. Also remove the reserved registers X0, X2,
++// X3, and X4 as it reduces the number of register classes that get synthesized
++// by tablegen.
++def GPRJALR : RegisterClass<"sim", [XLenVT], 32, (sub GPR, (sequence "X%u", 0, 5))> {
++  let RegInfos = XLenRI;
++}
++
++def GPRC : RegisterClass<"sim", [XLenVT], 32, (add
++    (sequence "X%u", 10, 15),
++    (sequence "X%u", 8, 9)
++  )> {
++  let RegInfos = XLenRI;
++}
++
++// For indirect tail calls, we can't use callee-saved registers, as they are
++// restored to the saved value before the tail call, which would clobber a call
++// address. We shouldn't use x5 since that is a hint for to pop the return
++// address stack on some microarchitectures.
++def GPRTC : RegisterClass<"sim", [XLenVT], 32, (add
++    (sequence "X%u", 6, 7),
++    (sequence "X%u", 10, 17),
++    (sequence "X%u", 28, 31)
++  )> {
++  let RegInfos = XLenRI;
++}
++
++def SP : RegisterClass<"sim", [XLenVT], 32, (add X2)> {
++  let RegInfos = XLenRI;
++}
+diff --git a/llvm/lib/Target/sim/simSchedule.td b/llvm/lib/Target/sim/simSchedule.td
+new file mode 100644
+index 000000000000..5dbe171a23b4
+--- /dev/null
++++ b/llvm/lib/Target/sim/simSchedule.td
+@@ -0,0 +1,183 @@
++//===-- RISCVSchedule.td - RISCV Scheduling Definitions ----*- tablegen -*-===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++/// Define scheduler resources associated with def operands.
++def WriteIALU       : SchedWrite;    // 32 or 64-bit integer ALU operations
++def WriteIALU32     : SchedWrite;    // 32-bit integer ALU operations on RV64I
++def WriteShiftImm   : SchedWrite;    // 32 or 64-bit shift by immediate operations
++def WriteShiftImm32 : SchedWrite;    // 32-bit shift by immediate operations on RV64Ix
++def WriteShiftReg   : SchedWrite;    // 32 or 64-bit shift by immediate operations
++def WriteShiftReg32 : SchedWrite;    // 32-bit shift by immediate operations on RV64Ix
++def WriteIDiv       : SchedWrite;    // 32-bit or 64-bit divide and remainder
++def WriteIDiv32     : SchedWrite;    // 32-bit divide and remainder on RV64I
++def WriteIMul       : SchedWrite;    // 32-bit or 64-bit multiply
++def WriteIMul32     : SchedWrite;    // 32-bit multiply on RV64I
++def WriteJmp        : SchedWrite;    // Jump
++def WriteJal        : SchedWrite;    // Jump and link
++def WriteJalr       : SchedWrite;    // Jump and link register
++def WriteJmpReg     : SchedWrite;    // Jump register
++def WriteNop        : SchedWrite;
++def WriteLDB        : SchedWrite;    // Load byte
++def WriteLDH        : SchedWrite;    // Load half-word
++def WriteLDW        : SchedWrite;    // Load word
++def WriteLDWU       : SchedWrite;    // Load word unsigned
++def WriteLDD        : SchedWrite;    // Load double-word
++def WriteCSR        : SchedWrite;    // CSR instructions
++def WriteSTB        : SchedWrite;    // Store byte
++def WriteSTH        : SchedWrite;    // Store half-word
++def WriteSTW        : SchedWrite;    // Store word
++def WriteSTD        : SchedWrite;    // Store double-word
++def WriteAtomicW    : SchedWrite;    //Atomic memory operation word size
++def WriteAtomicD    : SchedWrite;    //Atomic memory operation double word size
++def WriteAtomicLDW  : SchedWrite;    // Atomic load word
++def WriteAtomicLDD  : SchedWrite;    // Atomic load double word
++def WriteAtomicSTW  : SchedWrite;    // Atomic store word
++def WriteAtomicSTD  : SchedWrite;    // Atomic store double word
++def WriteFALU16     : SchedWrite;    // FP 16-bit computation
++def WriteFALU32     : SchedWrite;    // FP 32-bit computation
++def WriteFALU64     : SchedWrite;    // FP 64-bit computation
++def WriteFMul16     : SchedWrite;    // 16-bit floating point multiply
++def WriteFMA16      : SchedWrite;    // 16-bit floating point fused multiply-add
++def WriteFMul32     : SchedWrite;    // 32-bit floating point multiply
++def WriteFMA32      : SchedWrite;    // 32-bit floating point fused multiply-add
++def WriteFMul64     : SchedWrite;    // 64-bit floating point multiply
++def WriteFMA64      : SchedWrite;    // 64-bit floating point fused multiply-add
++def WriteFDiv16     : SchedWrite;    // 16-bit floating point divide
++def WriteFDiv32     : SchedWrite;    // 32-bit floating point divide
++def WriteFDiv64     : SchedWrite;    // 64-bit floating point divide
++def WriteFSqrt16    : SchedWrite;    // 16-bit floating point sqrt
++def WriteFSqrt32    : SchedWrite;    // 32-bit floating point sqrt
++def WriteFSqrt64    : SchedWrite;    // 64-bit floating point sqrt
++
++// Integer to float conversions
++def WriteFCvtI32ToF16  : SchedWrite;
++def WriteFCvtI32ToF32  : SchedWrite;
++def WriteFCvtI32ToF64  : SchedWrite;
++def WriteFCvtI64ToF16  : SchedWrite;    // RV64I only
++def WriteFCvtI64ToF32  : SchedWrite;    // RV64I only
++def WriteFCvtI64ToF64  : SchedWrite;    // RV64I only
++
++//Float to integer conversions
++def WriteFCvtF16ToI32  : SchedWrite;
++def WriteFCvtF16ToI64  : SchedWrite;    // RV64I only
++def WriteFCvtF32ToI32  : SchedWrite;
++def WriteFCvtF32ToI64  : SchedWrite;    // RV64I only
++def WriteFCvtF64ToI32  : SchedWrite;
++def WriteFCvtF64ToI64  : SchedWrite;    // RV64I only
++
++// Float to float conversions
++def WriteFCvtF32ToF64  : SchedWrite;
++def WriteFCvtF64ToF32  : SchedWrite;
++def WriteFCvtF16ToF32  : SchedWrite;
++def WriteFCvtF32ToF16  : SchedWrite;
++def WriteFCvtF16ToF64  : SchedWrite;
++def WriteFCvtF64ToF16  : SchedWrite;
++
++def WriteFClass16   : SchedWrite;    // 16-bit floating point classify
++def WriteFClass32   : SchedWrite;    // 32-bit floating point classify
++def WriteFClass64   : SchedWrite;    // 64-bit floating point classify
++def WriteFCmp16     : SchedWrite;    // 16-bit floating point compare
++def WriteFCmp32     : SchedWrite;    // 32-bit floating point compare
++def WriteFCmp64     : SchedWrite;    // 64-bit floating point compare
++def WriteFSGNJ16    : SchedWrite;    // 16-bit floating point sign-injection
++def WriteFSGNJ32    : SchedWrite;    // 32-bit floating point sign-injection
++def WriteFSGNJ64    : SchedWrite;    // 64-bit floating point sign-injection
++def WriteFMinMax16  : SchedWrite;    // 16-bit floating point min or max
++def WriteFMinMax32  : SchedWrite;    // 32-bit floating point min or max
++def WriteFMinMax64  : SchedWrite;    // 64-bit floating point min or max
++
++def WriteFMovF16ToI16     : SchedWrite;
++def WriteFMovI16ToF16     : SchedWrite;
++def WriteFMovF32ToI32     : SchedWrite;
++def WriteFMovI32ToF32     : SchedWrite;
++def WriteFMovF64ToI64     : SchedWrite;    // RV64I only
++def WriteFMovI64ToF64     : SchedWrite;    // RV64I only
++
++def WriteFLD16        : SchedWrite;    // Floating point sp load
++def WriteFLD32        : SchedWrite;    // Floating point sp load
++def WriteFLD64        : SchedWrite;    // Floating point dp load
++def WriteFST16        : SchedWrite;    // Floating point sp store
++def WriteFST32        : SchedWrite;    // Floating point sp store
++def WriteFST64        : SchedWrite;    // Floating point dp store
++
++/// Define scheduler resources associated with use operands.
++def ReadJmp         : SchedRead;
++def ReadJalr        : SchedRead;
++def ReadCSR         : SchedRead;
++def ReadMemBase     : SchedRead;
++def ReadFMemBase    : SchedRead;
++def ReadStoreData   : SchedRead;
++def ReadIALU        : SchedRead;
++def ReadIALU32      : SchedRead;    // 32-bit integer ALU operations on RV64I
++def ReadShiftImm    : SchedRead;
++def ReadShiftImm32  : SchedRead;    // 32-bit shift by immediate operations on RV64Ix
++def ReadShiftReg    : SchedRead;
++def ReadShiftReg32  : SchedRead;    // 32-bit shift by register operations on RV64Ix
++def ReadIDiv        : SchedRead;
++def ReadIDiv32      : SchedRead;
++def ReadIMul        : SchedRead;
++def ReadIMul32      : SchedRead;
++def ReadAtomicWA    : SchedRead;
++def ReadAtomicWD    : SchedRead;
++def ReadAtomicDA    : SchedRead;
++def ReadAtomicDD    : SchedRead;
++def ReadAtomicLDW   : SchedRead;    // Atomic load word
++def ReadAtomicLDD   : SchedRead;    // Atomic load double word
++def ReadAtomicSTW   : SchedRead;    // Atomic store word
++def ReadAtomicSTD   : SchedRead;    // Atomic store double word
++def ReadFALU16      : SchedRead;    // FP 16-bit computation
++def ReadFALU32      : SchedRead;    // FP 32-bit computation
++def ReadFALU64      : SchedRead;    // FP 64-bit computation
++def ReadFMul16      : SchedRead;    // 16-bit floating point multiply
++def ReadFMA16       : SchedRead;    // 16-bit floating point fused multiply-add
++def ReadFMul32      : SchedRead;    // 32-bit floating point multiply
++def ReadFMA32       : SchedRead;    // 32-bit floating point fused multiply-add
++def ReadFMul64      : SchedRead;    // 64-bit floating point multiply
++def ReadFMA64       : SchedRead;    // 64-bit floating point fused multiply-add
++def ReadFDiv16      : SchedRead;    // 16-bit floating point divide
++def ReadFDiv32      : SchedRead;    // 32-bit floating point divide
++def ReadFDiv64      : SchedRead;    // 64-bit floating point divide
++def ReadFSqrt16     : SchedRead;    // 16-bit floating point sqrt
++def ReadFSqrt32     : SchedRead;    // 32-bit floating point sqrt
++def ReadFSqrt64     : SchedRead;    // 64-bit floating point sqrt
++def ReadFCmp16      : SchedRead;
++def ReadFCmp32      : SchedRead;
++def ReadFCmp64      : SchedRead;
++def ReadFSGNJ16     : SchedRead;
++def ReadFSGNJ32     : SchedRead;
++def ReadFSGNJ64     : SchedRead;
++def ReadFMinMax16   : SchedRead;
++def ReadFMinMax32   : SchedRead;
++def ReadFMinMax64   : SchedRead;
++def ReadFCvtF16ToI32     : SchedRead;
++def ReadFCvtF16ToI64     : SchedRead;
++def ReadFCvtF32ToI32     : SchedRead;
++def ReadFCvtF32ToI64     : SchedRead;
++def ReadFCvtF64ToI32     : SchedRead;
++def ReadFCvtF64ToI64     : SchedRead;
++def ReadFCvtI32ToF16     : SchedRead;
++def ReadFCvtI32ToF32     : SchedRead;
++def ReadFCvtI32ToF64     : SchedRead;
++def ReadFCvtI64ToF16     : SchedRead;
++def ReadFCvtI64ToF32     : SchedRead;
++def ReadFCvtI64ToF64     : SchedRead;
++def ReadFMovF16ToI16     : SchedRead;
++def ReadFMovI16ToF16     : SchedRead;
++def ReadFMovF32ToI32     : SchedRead;
++def ReadFMovI32ToF32     : SchedRead;
++def ReadFMovF64ToI64     : SchedRead;
++def ReadFMovI64ToF64     : SchedRead;
++def ReadFCvtF32ToF64     : SchedRead;
++def ReadFCvtF64ToF32     : SchedRead;
++def ReadFCvtF16ToF32     : SchedRead;
++def ReadFCvtF32ToF16     : SchedRead;
++def ReadFCvtF16ToF64     : SchedRead;
++def ReadFCvtF64ToF16     : SchedRead;
++def ReadFClass16         : SchedRead;
++def ReadFClass32         : SchedRead;
++def ReadFClass64         : SchedRead;
+diff --git a/llvm/lib/Target/sim/simSubtarget.cpp b/llvm/lib/Target/sim/simSubtarget.cpp
+new file mode 100644
+index 000000000000..dd8f363dd7dc
+--- /dev/null
++++ b/llvm/lib/Target/sim/simSubtarget.cpp
+@@ -0,0 +1,19 @@
++#include "simSubtarget.h"
++#include "sim.h"
++#include "llvm/MC/TargetRegistry.h"
++#include "llvm/Support/ErrorHandling.h"
++
++using namespace llvm;
++
++#define DEBUG_TYPE "sim-subtarget"
++
++#define GET_SUBTARGETINFO_TARGET_DESC
++#define GET_SUBTARGETINFO_CTOR
++#include "simGenSubtargetInfo.inc"
++
++void simSubtarget::anchor() {}
++
++simSubtarget::simSubtarget(const Triple &TT, const std::string &CPU,
++                             const std::string &FS, const TargetMachine &TM)
++    : simGenSubtargetInfo(TT, CPU, /*TuneCPU=*/CPU, FS), InstrInfo(*this),
++      FrameLowering(*this), TLInfo(TM, *this) {}
+diff --git a/llvm/lib/Target/sim/simSubtarget.h b/llvm/lib/Target/sim/simSubtarget.h
+new file mode 100644
+index 000000000000..15479a8405f1
+--- /dev/null
++++ b/llvm/lib/Target/sim/simSubtarget.h
+@@ -0,0 +1,58 @@
++#ifndef __LLVM_LIB_TARGET_SIM_SIMSUBTARGET_H__
++#define __LLVM_LIB_TARGET_SIM_SIMSUBTARGET_H__
++
++#include "MCTargetDesc/simInfo.h"
++#include "simFrameLowering.h"
++#include "simISelLowering.h"
++#include "simInstrInfo.h"
++#include "llvm/CodeGen/SelectionDAGTargetInfo.h"
++#include "llvm/CodeGen/TargetSubtargetInfo.h"
++#include <string>
++
++#define GET_SUBTARGETINFO_HEADER
++#include "simGenSubtargetInfo.inc"
++
++namespace llvm {
++
++class StringRef;
++class TargetMachine;
++
++class simSubtarget : public simGenSubtargetInfo {
++  virtual void anchor();
++
++  simRegisterInfo RegInfo;
++  simInstrInfo InstrInfo;
++  simFrameLowering FrameLowering;
++  simTargetLowering TLInfo;
++  SelectionDAGTargetInfo TSInfo;
++  simABI::ABI TargetABI = simABI::ABI_ILP32;
++  MVT XLenVT = MVT::i32;
++  unsigned XLen = 32;
++
++public:
++  simSubtarget(const Triple &TT, const std::string &CPU, const std::string &FS,
++                const TargetMachine &TM);
++
++  /// Definition of function is auto generated by tblgen.
++  void ParseSubtargetFeatures(StringRef CPU, StringRef TuneCPU, StringRef FS);
++
++  const simInstrInfo *getInstrInfo() const override { return &InstrInfo; }
++  const simFrameLowering *getFrameLowering() const override {
++    return &FrameLowering;
++  }
++  const simTargetLowering *getTargetLowering() const override {
++    return &TLInfo;
++  }
++  const simRegisterInfo *getRegisterInfo() const override { return &RegInfo; }
++  const SelectionDAGTargetInfo *getSelectionDAGInfo() const override {
++    return &TSInfo;
++  }
++
++  auto getTargetABI() const { return TargetABI; }
++  auto getXLenVT() const { return XLenVT; }
++  auto getXLen() const { return XLen; }
++};
++
++} // end namespace llvm
++
++#endif // __LLVM_LIB_TARGET_SIM_SIMSUBTARGET_H__
+diff --git a/llvm/lib/Target/sim/simTargetMachine.cpp b/llvm/lib/Target/sim/simTargetMachine.cpp
+new file mode 100644
+index 000000000000..fd2822110e8a
+--- /dev/null
++++ b/llvm/lib/Target/sim/simTargetMachine.cpp
+@@ -0,0 +1,91 @@
++//===----------------------------------------------------------------------===//
++//
++// Implements the info about sim target spec.
++//
++//===----------------------------------------------------------------------===//
++
++#include "simTargetMachine.h"
++#include "sim.h"
++//#include "simTargetTransformInfo.h"
++#include "TargetInfo/simTargetInfo.h"
++#include "llvm/CodeGen/Passes.h"
++#include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
++#include "llvm/CodeGen/TargetPassConfig.h"
++#include "llvm/IR/Attributes.h"
++#include "llvm/IR/Function.h"
++#include "llvm/IR/LegacyPassManager.h"
++#include "llvm/MC/TargetRegistry.h"
++#include "llvm/Support/CodeGen.h"
++#include "llvm/Support/ErrorHandling.h"
++#include "llvm/Target/TargetOptions.h"
++
++#define DEBUG_TYPE "sim"
++
++using namespace llvm;
++
++static Reloc::Model getRelocModel(Optional<Reloc::Model> RM) {
++  return RM.getValueOr(Reloc::Static);
++}
++
++/// simTargetMachine ctor - Create an ILP32 Architecture model
++simTargetMachine::simTargetMachine(const Target &T, const Triple &TT,
++                                     StringRef CPU, StringRef FS,
++                                     const TargetOptions &Options,
++                                     Optional<Reloc::Model> RM,
++                                     Optional<CodeModel::Model> CM,
++                                     CodeGenOpt::Level OL, bool JIT)
++    : LLVMTargetMachine(T,
++                        "e-m:e-p:32:32-i1:8:32-i8:8:32-i16:16:32-i32:32:32-"
++                        "f32:32:32-i64:32-f64:32-a:0:32-n32",
++                        TT, CPU, FS, Options, getRelocModel(RM),
++                        getEffectiveCodeModel(CM, CodeModel::Small), OL),
++      TLOF(std::make_unique<TargetLoweringObjectFileELF>()),
++      Subtarget(TT, std::string(CPU), std::string(FS), *this) {
++  initAsmInfo();
++}
++
++simTargetMachine::~simTargetMachine() = default;
++
++namespace {
++
++/// sim Code Generator Pass Configuration Options.
++class simPassConfig : public TargetPassConfig {
++public:
++  simPassConfig(simTargetMachine &TM, PassManagerBase &PM)
++      : TargetPassConfig(TM, PM) {}
++
++  simTargetMachine &getsimTargetMachine() const {
++    return getTM<simTargetMachine>();
++  }
++
++  bool addInstSelector() override;
++  // void addPreEmitPass() override;
++  // void addPreRegAlloc() override;
++};
++
++} // end anonymous namespace
++
++TargetPassConfig *simTargetMachine::createPassConfig(PassManagerBase &PM) {
++  return new simPassConfig(*this, PM);
++}
++
++bool simPassConfig::addInstSelector() {
++  addPass(createsimISelDag(getsimTargetMachine(), getOptLevel()));
++  return false;
++}
++
++// void simPassConfig::addPreEmitPass() { llvm_unreachable(""); }
++
++// void simPassConfig::addPreRegAlloc() { llvm_unreachable(""); }
++
++// Force static initialization.
++extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializesimTarget() {
++  RegisterTargetMachine<simTargetMachine> X(getThesimTarget());
++}
++
++#if 0
++TargetTransformInfo
++simTargetMachine::getTargetTransformInfo(const Function &F) {
++  return TargetTransformInfo(simTTIImpl(this, F));
++}
++#endif
+\ No newline at end of file
+diff --git a/llvm/lib/Target/sim/simTargetMachine.h b/llvm/lib/Target/sim/simTargetMachine.h
+new file mode 100644
+index 000000000000..2d680479503c
+--- /dev/null
++++ b/llvm/lib/Target/sim/simTargetMachine.h
+@@ -0,0 +1,46 @@
++#ifndef __LLVM_LIB_TARGET_SIM_SIMTARGETMACHINE_H__
++#define __LLVM_LIB_TARGET_SIM_SIMTARGETMACHINE_H__
++
++#include "simInstrInfo.h"
++#include "simSubtarget.h"
++#include "llvm/Target/TargetMachine.h"
++
++namespace llvm {
++
++class simTargetMachine : public LLVMTargetMachine {
++  std::unique_ptr<TargetLoweringObjectFile> TLOF;
++  simSubtarget Subtarget;
++  // mutable StringMap<std::unique_ptr<simSubtarget>> SubtargetMap;
++
++public:
++  simTargetMachine(const Target &T, const Triple &TT, StringRef CPU,
++                    StringRef FS, const TargetOptions &Options,
++                    Optional<Reloc::Model> RM, Optional<CodeModel::Model> CM,
++                    CodeGenOpt::Level OL, bool JIT);
++  ~simTargetMachine() override;
++
++  const simSubtarget *getSubtargetImpl() const { return &Subtarget; }
++  const simSubtarget *getSubtargetImpl(const Function &) const override {
++    return &Subtarget;
++  }
++
++  // Pass Pipeline Configuration
++  TargetPassConfig *createPassConfig(PassManagerBase &PM) override;
++  TargetLoweringObjectFile *getObjFileLowering() const override {
++    return TLOF.get();
++  }
++
++#if 0
++  bool
++  addPassesToEmitFile(PassManagerBase &, raw_pwrite_stream &,
++                      raw_pwrite_stream *, CodeGenFileType,
++                      bool /*DisableVerify*/ = true,
++                      MachineModuleInfoWrapperPass *MMIWP = nullptr) override {
++    return false;
++  }
++#endif
++  // TargetTransformInfo getTargetTransformInfo(const Function &F) override;
++};
++} // end namespace llvm
++
++#endif // __LLVM_LIB_TARGET_SIM_SIMTARGETMACHINE_H__
+diff --git a/llvm/lib/Target/sim/simTargetStreamer.h b/llvm/lib/Target/sim/simTargetStreamer.h
+new file mode 100644
+index 000000000000..e21910e74384
+--- /dev/null
++++ b/llvm/lib/Target/sim/simTargetStreamer.h
+@@ -0,0 +1,16 @@
++#ifndef __LLVM_LIB_TARGET_SIM_SIMTARGETSTREAMER_H__
++#define __LLVM_LIB_TARGET_SIM_SIMTARGETSTREAMER_H__
++
++#include "llvm/MC/MCStreamer.h"
++
++namespace llvm {
++
++class simTargetStreamer : public MCTargetStreamer {
++public:
++  simTargetStreamer(MCStreamer &S);
++  ~simTargetStreamer() override;
++};
++
++} // end namespace llvm
++
++#endif // __LLVM_LIB_TARGET_SIM_SIMTARGETSTREAMER_H__
